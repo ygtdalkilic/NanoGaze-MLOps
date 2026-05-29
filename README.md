@@ -124,6 +124,6 @@ data/
 
 ## Authors
 
-Yigit — [ygtdalkilic@gmail.com](mailto:ygtdalkilic@gmail.com)
+Yigit Dalkilic
 
 Claude Sonnet 4.6 (Anthropic) — code refinement & testing
