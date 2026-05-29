@@ -1,4 +1,4 @@
-# Apex-Telemetry
+# Apex-Telemetry (Still in development)
 
 A real-time server log pipeline that uses machine learning to separate the noise from actual threats — then ships the weird stuff off to a cloud LLM to figure out what went wrong and why.
 
