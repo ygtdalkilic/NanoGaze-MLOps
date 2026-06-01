@@ -1,4 +1,4 @@
-# NanoGaze MLOps
+# NanoGaze MLOps (Still in development)
 
 An MLOps pipeline that solves LLM hallucination. A local AI agent searches the internet and dumps findings — the dual-engine architecture fact-checks and filters that dump so only verified, trustworthy data survives.
 
