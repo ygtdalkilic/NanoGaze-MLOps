@@ -1,104 +1,106 @@
-from collections import Counter
+import os
 from urllib.parse import urlparse
 
-DISCARD_THRESHOLD = 50
+DISCARD_THRESHOLD = int(os.getenv("ENGINE1_THRESHOLD", "50"))
+
+REQUIRED_FIELDS = ["url", "title", "body", "source"]
+
+TRUSTED_DOMAINS = {
+    "github.com", "nvd.nist.gov", "cve.mitre.org", "exploit-db.com",
+    "thehackernews.com", "bleepingcomputer.com", "krebsonsecurity.com",
+    "nist.gov", "cisa.gov", "microsoft.com", "google.com", "cloudflare.com",
+    "reddit.com", "stackoverflow.com", "medium.com", "arxiv.org",
+    "sec.gov", "reuters.com", "techcrunch.com", "wired.com",
+}
+
+REPUTABLE_TLDS = {".com", ".org", ".edu", ".gov", ".io", ".net", ".co.uk", ".ac.uk"}
 
 
-def _detect_criteria(entries: list[dict]) -> tuple[list[str], list[str], float, float]:
-    field_counts = Counter()
-    domain_counts = Counter()
-    title_lengths = []
-    body_lengths = []
-
-    for entry in entries:
-        for key, val in entry.items():
-            if isinstance(val, str) and val.strip():
-                field_counts[key] += 1
-        try:
-            domain = urlparse(entry.get("url", "")).netloc.replace("www.", "")
-            if domain:
-                domain_counts[domain] += 1
-        except Exception:
-            pass
-        if entry.get("title"):
-            title_lengths.append(len(entry["title"]))
-        if entry.get("body"):
-            body_lengths.append(len(entry["body"]))
-
-    total = len(entries) or 1
-    expected_fields = [f for f, c in field_counts.items() if c / total >= 0.5]
-    trusted_domains = [d for d, c in domain_counts.items() if c >= 2]
-    avg_title = sum(title_lengths) / len(title_lengths) if title_lengths else 20
-    avg_body = sum(body_lengths) / len(body_lengths) if body_lengths else 100
-
-    return expected_fields, trusted_domains, avg_title, avg_body
+def _dedup(entries: list[dict]) -> list[dict]:
+    seen: set[str] = set()
+    out = []
+    for e in entries:
+        key = e.get("url", "").strip().rstrip("/")
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(e)
+    return out
 
 
-def _score_validity(entry: dict, fields: list[str]) -> float:
-    valid = sum(
-        1 for f in fields
-        if isinstance(entry.get(f), str) and entry.get(f).strip()
-    )
-    return round((valid / len(fields)) * 100, 1) if fields else 0.0
+def _score_completeness(entry: dict) -> float:
+    filled = sum(1 for f in REQUIRED_FIELDS if entry.get(f) and str(entry[f]).strip())
+    return round((filled / len(REQUIRED_FIELDS)) * 100, 1)
 
 
-def _score_completeness(entry: dict, fields: list[str]) -> float:
-    filled = sum(1 for f in fields if entry.get(f))
-    return round((filled / len(fields)) * 100, 1) if fields else 0.0
+def _score_validity(entry: dict) -> float:
+    checks = 0
+
+    url = entry.get("url", "")
+    if url.startswith(("http://", "https://")) and "." in url[8:]:
+        checks += 1
+
+    if len(entry.get("title", "").split()) >= 3:
+        checks += 1
+
+    if len(entry.get("body", "").split()) >= 10:
+        checks += 1
+
+    return round((checks / 3) * 100, 1)
 
 
-def _score_popularity(entry: dict, trusted_domains: list[str]) -> float:
+def _score_reputation(entry: dict) -> float:
     try:
-        domain = urlparse(entry.get("url", "")).netloc.replace("www.", "")
+        domain = urlparse(entry.get("url", "")).netloc.lower().replace("www.", "")
     except Exception:
+        return 0.0
+
+    if not domain:
+        return 0.0
+
+    if any(domain == d or domain.endswith("." + d) for d in TRUSTED_DOMAINS):
+        return 100.0
+
+    for tld in REPUTABLE_TLDS:
+        if domain.endswith(tld):
+            return 65.0
+
+    if "." in domain and not domain.replace(".", "").isdigit():
         return 40.0
-    return 100.0 if any(d in domain for d in trusted_domains) else 40.0
+
+    return 10.0
 
 
-def _score_discoverability(entry: dict, avg_title: float, avg_body: float) -> float:
-    title = entry.get("title", "")
-    body = entry.get("body", "")
-    title_score = min(len(title) / avg_title, 1.0) if avg_title else 0.0
-    body_score = min(len(body) / avg_body, 1.0) if avg_body else 0.0
+def _score_richness(entry: dict) -> float:
+    title_score = min(len(entry.get("title", "").split()) / 10, 1.0)
+    body_score = min(len(entry.get("body", "").split()) / 50, 1.0)
     return round(((title_score + body_score) / 2) * 100, 1)
 
 
-def _score_usage(entries: list[dict], entry: dict) -> float:
-    try:
-        domain = urlparse(entry.get("url", "")).netloc.replace("www.", "")
-    except Exception:
-        return 0.0
-    count = sum(
-        1 for e in entries
-        if urlparse(e.get("url", "")).netloc.replace("www.", "") == domain
-    )
-    return min(count * 20, 100.0)
-
-
-def score_entry(entry: dict, all_entries: list[dict], criteria: tuple) -> dict:
-    fields, trusted_domains, avg_title, avg_body = criteria
-
-    validity        = _score_validity(entry, fields)
-    completeness    = _score_completeness(entry, fields)
-    popularity      = _score_popularity(entry, trusted_domains)
-    discoverability = _score_discoverability(entry, avg_title, avg_body)
-    usage           = _score_usage(all_entries, entry)
+def _score(entry: dict) -> dict:
+    completeness = _score_completeness(entry)
+    validity     = _score_validity(entry)
+    reputation   = _score_reputation(entry)
+    richness     = _score_richness(entry)
 
     trust_score = round(
-        (validity + completeness + popularity + discoverability + usage) / 5, 1
+        completeness * 0.35 +
+        validity     * 0.30 +
+        reputation   * 0.20 +
+        richness     * 0.15,
+        1
     )
     return {**entry, "trust_score": trust_score, "scores": {
-        "validity": validity,
         "completeness": completeness,
-        "popularity": popularity,
-        "discoverability": discoverability,
-        "usage": usage,
+        "validity":     validity,
+        "reputation":   reputation,
+        "richness":     richness,
     }}
 
 
 def run(entries: list[dict]) -> tuple[list[dict], list[dict]]:
-    criteria = _detect_criteria(entries)
-    scored = [score_entry(e, entries, criteria) for e in entries]
+    unique = _dedup(entries)
+    scored = [_score(e) for e in unique]
     verified  = [e for e in scored if e["trust_score"] >= DISCARD_THRESHOLD]
     eliminated = [e for e in scored if e["trust_score"] <  DISCARD_THRESHOLD]
     return verified, eliminated

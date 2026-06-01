@@ -9,7 +9,7 @@ class DatabaseManager:
         try:
             self.client = pymongo.MongoClient(uri, serverSelectionTimeoutMS=5000)
             self.client.server_info()
-            db = self.client["nanogaze_mlops"]
+            db = self.client[os.getenv("MONGO_DB", "nanogaze_mlops")]
             self.raw_queue = db["raw_queue"]
             self.raw_logs = db["raw_logs"]
             self.safe_traffic = db["safe_traffic"]

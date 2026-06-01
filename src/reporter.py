@@ -1,7 +1,8 @@
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-REPORTS_DIR = Path("reports")
+REPORTS_DIR = Path(os.getenv("REPORTS_DIR", "reports"))
 
 
 def _trust_color(score: float) -> str:

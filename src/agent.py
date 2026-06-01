@@ -1,45 +1,34 @@
-"""
-AI Agent — searches the internet for cybersecurity threat data and dumps
-raw findings into MongoDB raw_queue for Engine 1 to process.
-"""
-
 import re
 import sys
 import os
-from datetime import datetime, timezone 
-import ollama 
+from datetime import datetime, timezone
+from pathlib import Path
 
+from google import genai
 from ddgs import DDGS
 
 sys.path.insert(0, os.path.dirname(__file__))
 from db_manager import DatabaseManager
 
-# Topics the agent hunts for on every run
-SEARCH_QUERIES = [
-    "new CVE vulnerability exploit 2025",
-    "active malware campaign IP addresses",
-    "SQL injection attack patterns site:github.com",
-    "DDoS botnet command control server",
-    "web shell backdoor HTTP request pattern",
-]
+_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-001")
+_max_results = int(os.getenv("AGENT_MAX_RESULTS", "5"))
+
+_queries_file = Path(os.getenv("QUERIES_FILE", Path(__file__).parent.parent / "queries.txt"))
+SEARCH_QUERIES = [l.strip() for l in _queries_file.read_text().splitlines() if l.strip()]
+
+_prompt_file = Path(os.getenv("PROMPT_FILE", Path(__file__).parent.parent / "prompt.txt"))
+_prompt_template = _prompt_file.read_text()
 
 IP_PATTERN = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
-CVE_PATTERN = re.compile(r'CVE-\d{4}-\d+')
+STAT_PATTERN = re.compile(r'\b\d+(?:\.\d+)?%|\$\d[\d,.]*[BMK]?\b')
 
 
 def analyze_with_llm(text: str) -> dict:
-    prompt = (
-        "You are a cybersecurity analyst. Read the following web search result and assess it.\n"
-        "Reply in exactly this format:\n"
-        "threat_level: low | medium | high\n"
-        "reason: one sentence explaining why\n\n"
-        f"Search result:\n{text[:1000]}"
-    )
-    response = ollama.chat(
-        model="phi3:mini",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    raw = response.message.content
+    max_chars = int(os.getenv("AGENT_MAX_CHARS", "1000"))
+    prompt = _prompt_template.format(text=text[:max_chars])
+    response = _client.models.generate_content(model=_model, contents=prompt)
+    raw = response.text
     threat_level = "unknown"
     reason = raw
     for line in raw.splitlines():
@@ -53,13 +42,13 @@ def analyze_with_llm(text: str) -> dict:
 def _extract_signals(text: str) -> dict:
     return {
         "ips": IP_PATTERN.findall(text),
-        "cves": CVE_PATTERN.findall(text),
+        "statistics": STAT_PATTERN.findall(text),
         "length": len(text),
-        "has_exploit": any(w in text.lower() for w in ["exploit", "payload", "shell", "injection", "bypass"]),
+        "has_claims": any(w in text.lower() for w in ["according to", "study shows", "researchers found", "data shows", "report says"]),
     }
 
 
-def run(max_results_per_query=5):
+def run(max_results_per_query=_max_results):
     db = DatabaseManager()
     total = 0
 

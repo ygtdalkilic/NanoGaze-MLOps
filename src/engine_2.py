@@ -57,15 +57,15 @@ def _fact_check(entry: dict) -> dict:
     failed = []
     details = {}
 
-    # CVE validation — verify each CVE exists in NVD
-    cves = list(set(signals.get("cves", []) + CVE_PATTERN.findall(text)))
+    # CVE validation — verify any CVEs mentioned in text actually exist in NVD
+    cves = list(set(CVE_PATTERN.findall(text)))
     if cves:
         bad = [c for c in cves if not _check_cve(c)]
         if bad:
             failed.append("cve")
             details["cve"] = f"Unverified CVEs: {', '.join(bad)}"
 
-    # IP validation — all-private IPs in a threat report is a hallucination signal
+    # IP validation — only private/loopback IPs with no public ones is a hallucination signal
     ips = list(set(signals.get("ips", []) + IP_PATTERN.findall(text)))
     if ips:
         public = [ip for ip in ips if _is_public_ip(ip)]
@@ -80,13 +80,14 @@ def _fact_check(entry: dict) -> dict:
             failed.append("url")
             details["url"] = "URL returned an error response"
 
-    # Threat consistency — high threat with zero signals is suspicious
+    # Consistency — high hallucination risk with no verifiable signals is suspicious
     llm = entry.get("llm_analysis", {})
     threat = llm.get("threat_level", "unknown")
-    has_exploit = signals.get("has_exploit", False)
-    if threat == "high" and not has_exploit and not cves and not [ip for ip in ips if _is_public_ip(ip)]:
-        failed.append("threat_consistency")
-        details["threat_consistency"] = "High threat level claimed but no exploit keywords, CVEs, or public IPs found"
+    has_claims = signals.get("has_claims", False)
+    has_stats = bool(signals.get("statistics"))
+    if threat == "high" and not has_claims and not has_stats and not cves and not ips:
+        failed.append("consistency")
+        details["consistency"] = "High hallucination risk flagged but no verifiable claims, stats, or IPs found"
 
     return {"passed": len(failed) == 0, "failed": failed, "details": details}
 

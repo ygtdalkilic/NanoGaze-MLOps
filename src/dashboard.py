@@ -7,7 +7,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 import pipeline
 
-REPORTS_DIR = Path("reports")
+REPORTS_DIR = Path(os.getenv("REPORTS_DIR", "reports"))
 
 
 def load_reports():
@@ -379,7 +379,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({"message": msg}).encode())
 
 
-def run(port=8080):
+def run(port=int(os.getenv("DASHBOARD_PORT", "8080"))):
     os.chdir(Path(__file__).parent.parent)
     print(f"[DASHBOARD] Running at http://localhost:{port}")
     HTTPServer(("", port), Handler).serve_forever()
