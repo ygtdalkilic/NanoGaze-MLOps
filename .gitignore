@@ -1,6 +1,7 @@
 # Claude
 CLAUDE.md
 .claude/
+project.md
 
 # Local scripts
 stop-ollama.ps1
@@ -122,6 +123,10 @@ package-lock.json
 yarn.lock
 pnpm-lock.yaml
 bun.lockb
+
+# Runtime data
+data/
+reports/
 
 # Databases
 *.sqlite

@@ -1,34 +1,72 @@
-# Apex-Telemetry (Still in development)
+# NanoGaze MLOps
 
-A real-time server log pipeline with a dual-engine architecture. A local AI agent searches the internet for threat intelligence, a PyTorch autoencoder classifies everything in real time, and anomalies get routed to a cloud LLM for forensic analysis.
+An MLOps pipeline that solves LLM hallucination. A local AI agent searches the internet and dumps findings — the dual-engine architecture fact-checks and filters that dump so only verified, trustworthy data survives.
+
+---
+
+## The Problem
+
+LLMs hallucinate. When an AI agent searches and reports findings, it may produce fake IPs, made-up CVE numbers, wrong threat levels, or fabricated claims. You can't trust the raw output. NanoGaze filters it.
 
 ---
 
 ## How it works
 
 ```
-GitHub Actions (every 6h)
+Phi-3 Mini (Ollama) — searches internet, dumps findings
         │
         ▼
-  agent.py — DuckDuckGo search + Phi-3 Mini (local SLM)
-        │     reasons about each result: low / medium / high threat
-        ▼
-  MongoDB: raw_queue        ← Container 1 (raw AI findings)
+MongoDB: raw_queue        ← raw AI findings
         │
         ▼
-  Engine 1 — PyTorch Autoencoder
-  trains on normal traffic, flags by reconstruction error
+Engine 1 — noise filter (trust scoring, 5 metrics)
+        │   scores every entry 0–100%
+        │   threshold: 50% — below = eliminated
+        │
+        ▼
+Engine 2 — fact validator
+        │   cross-checks CVEs against NVD
+        │   validates IPs (public vs private/hallucinated)
+        │   checks URL reachability
+        │   flags threat level inconsistencies
         │
    ┌────┴────┐
    ▼         ▼
-safe_traffic  active_threats  ← Container 2 & 3
-                │
-                ▼
-           router.py ──► Cloud LLM Agent (or pending_analysis.json)
-
-  Parallel: live log stream from log_generator.py
-  also feeds Engine 1 in real time via main.py
+Verified   Eliminated (with reason)
+        │
+        ▼
+Dashboard (localhost:8080)
+├── Raw Report       — everything the LLM found
+├── Verified Report  — passed both engines
+└── Eliminated Report — removed + reason why
 ```
+
+---
+
+## Engine 1 — Trust Scoring
+
+Each entry is scored across 5 auto-detected metrics:
+
+| Metric | What it measures |
+|---|---|
+| Validity | Fields are non-empty and correctly typed |
+| Completeness | How many expected fields have data |
+| Popularity | Source domain reliability |
+| Discoverability | Title and body length/richness |
+| Usage | How often this source appears in the dump |
+
+Criteria are **auto-detected from the data itself** — no hardcoded rules. Works for any domain.
+
+---
+
+## Engine 2 — Fact Validation
+
+| Check | What it does |
+|---|---|
+| CVE validation | Queries NVD API to verify CVE IDs exist |
+| IP validation | Flags entries with only private/loopback IPs |
+| URL reachability | Checks source URL returns a valid response |
+| Threat consistency | Flags "high" threat claims with zero supporting signals |
 
 ---
 
@@ -36,13 +74,12 @@ safe_traffic  active_threats  ← Container 2 & 3
 
 | Layer | Technology |
 |---|---|
-| AI Agent | DuckDuckGo Search + Ollama Phi-3 Mini (local) |
-| ML Engine | PyTorch Autoencoder (anomaly detection) |
+| AI Agent | DuckDuckGo Search + Ollama Phi-3 Mini |
+| Engine 1 | Custom trust scoring (auto-detected criteria) |
+| Engine 2 | NVD API + IP/URL validation |
 | Database | MongoDB Atlas |
-| Automation | GitHub Actions (scheduled + event-driven) |
-| Cloud Router | REST POST to cloud LLM agent |
-
-> **Note:** The cloud LLM router (`CLOUD_AGENT_ENDPOINT`) is architected and ready but not active — no budget for a hosted LLM service during development. Phi-3 Mini running locally via Ollama is used in its place for testing. The cloud integration will be wired in once the project moves past the development phase.
+| Dashboard | Python HTTP server (localhost:8080) |
+| Automation | GitHub Actions (manual trigger) |
 
 ---
 
@@ -50,54 +87,38 @@ safe_traffic  active_threats  ← Container 2 & 3
 
 - Python 3.13+
 - [Ollama](https://ollama.com) with `phi3:mini` pulled
-- MongoDB Atlas free cluster (or local `mongod`)
+- MongoDB Atlas free cluster
 - `pip install -r requirements.txt`
 
 ---
 
 ## Getting started
 
-**Clone and install:**
 ```bash
-git clone https://github.com/ygtdalkilic/Apex-Telemetry.git
-cd Apex-Telemetry
+git clone https://github.com/ygtdalkilic/NanoGaze-MLOps.git
+cd NanoGaze-MLOps
 pip install -r requirements.txt
-pip install torch --index-url https://download.pytorch.org/whl/cpu
 ```
 
-**Pull the local model:**
 ```powershell
 ollama pull phi3:mini
-```
-
-**Set your MongoDB URI:**
-```powershell
 $env:MONGO_URI = "mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/"
-```
-
-**Optionally set a cloud agent endpoint:**
-```powershell
-$env:CLOUD_AGENT_ENDPOINT = "https://your-agent-url"
 ```
 
 ---
 
 ## Run
 
-**Live log pipeline (local):**
+**1. Run the AI agent** (searches internet, queues findings into MongoDB):
 ```powershell
-& "C:\...\python.exe" src\main.py
+& ".venv\Scripts\python.exe" src\agent.py
 ```
 
-**AI agent only (search + queue):**
+**2. Launch the dashboard** (runs both engines, shows reports):
 ```powershell
-& "C:\...\python.exe" src\agent.py
+& ".venv\Scripts\python.exe" src\dashboard.py
 ```
-
-**Process queued agent findings through Engine 1:**
-```powershell
-& "C:\...\python.exe" src\run_engine_queue.py
-```
+Then open `http://localhost:8080` and click **Run Pipeline**.
 
 ---
 
@@ -105,57 +126,32 @@ $env:CLOUD_AGENT_ENDPOINT = "https://your-agent-url"
 
 ```
 src/
-├── main.py              # live pipeline entry point
-├── agent.py             # AI agent — searches web, reasons with Phi-3
-├── engine_1.py          # PyTorch autoencoder — trains + classifies
-├── run_engine_queue.py  # drains raw_queue (used by GitHub Actions)
-├── db_manager.py        # MongoDB collections
-├── log_generator.py     # simulates 95% normal / 5% anomalous traffic
-└── router.py            # routes threats to cloud or local fallback
+├── agent.py       # AI agent — DuckDuckGo + Phi-3 Mini
+├── engine_1.py    # noise filter (trust scoring, auto-detected criteria)
+├── engine_2.py    # fact validator (CVE, IP, URL, threat consistency)
+├── pipeline.py    # orchestrator — Engine 1 → Engine 2 → reports
+├── reporter.py    # generates 3 HTML reports
+├── dashboard.py   # localhost:8080 dashboard
+└── db_manager.py  # MongoDB connection
 
-.github/workflows/
-├── agent.yml            # runs agent every 6h, triggers engine
-└── engine.yml           # processes queue after agent finishes
-
-data/
-├── live_stream.log        # generated at runtime
-└── pending_analysis.json  # offline anomaly buffer
+reports/           # generated at runtime (gitignored)
+├── report_raw.html
+├── report_verified.html
+└── report_eliminated.html
 ```
 
 ---
 
 ## MongoDB collections
 
-| Collection | What's in it |
+| Collection | Contents |
 |---|---|
-| `raw_queue` | Raw findings from the AI agent, pending Engine 1 |
-| `safe_traffic` | Logs Engine 1 scored as normal |
-| `active_threats` | Flagged anomalies, routed for LLM analysis |
+| `raw_queue` | Raw AI agent findings, pending pipeline |
+| `safe_traffic` | Reserved |
+| `active_threats` | Reserved |
 
 ---
 
-## GitHub Actions
-
-Add `MONGO_URI` as a repository secret under **Settings → Secrets → Actions**.
-
-| Workflow | Trigger | What it does |
-|---|---|---|
-| `agent.yml` | Every 6h or manual | Runs AI agent, queues findings, fires engine |
-| `engine.yml` | After agent or manual | Trains model, drains queue, classifies |
-
----
-
-## Environment variables
-
-| Variable | Default | What it does |
-|---|---|---|
-| `MONGO_URI` | `mongodb://localhost:27017/` | MongoDB connection |
-| `CLOUD_AGENT_ENDPOINT` | _(not set)_ | POST target for flagged anomalies |
-
----
-
-## Authors
+## Author
 
 Yigit Dalkilic
-
-Claude Sonnet 4.6 (Anthropic) — code refinement & testing
