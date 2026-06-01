@@ -1,188 +1,104 @@
-import os
-import re
-import time
-import tracemalloc
-from datetime import datetime, timezone
+from collections import Counter
+from urllib.parse import urlparse
 
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
-
-from log_generator import _normal_line
-from db_manager import DatabaseManager
-
-LOG_PATTERN = re.compile(
-    r'(?P<ip>[\d.]+) .+ \[.+\] "(?P<method>\w+) (?P<path>\S+) HTTP/\S+" (?P<status>\d+) (?P<size>\d+)'
-)
-METHOD_MAP = {"GET": 0, "POST": 1, "PUT": 2, "DELETE": 3, "PATCH": 4, "OPTIONS": 5, "HEAD": 6}
-
-FEATURE_DIM = 6
+DISCARD_THRESHOLD = 50
 
 
-def _parse(line):
-    m = LOG_PATTERN.search(line)
-    if not m:
-        return None
-    ip_parts = m["ip"].split(".")
-    ip_norm = sum(int(o) / 255.0 * (1 / (i + 1)) for i, o in enumerate(ip_parts))
-    method = METHOD_MAP.get(m["method"], 9) / 9.0
-    status = int(m["status"]) / 599.0
-    size = min(int(m["size"]), 500_000) / 500_000.0
-    path_len = min(len(m["path"]), 500) / 500.0
-    has_injection = 1.0 if any(c in m["path"] for c in ["'", "<", ">", "etc", "admin"]) else 0.0
-    return [ip_norm, method, status, size, path_len, has_injection]
+def _detect_criteria(entries: list[dict]) -> tuple[list[str], list[str], float, float]:
+    field_counts = Counter()
+    domain_counts = Counter()
+    title_lengths = []
+    body_lengths = []
+
+    for entry in entries:
+        for key, val in entry.items():
+            if isinstance(val, str) and val.strip():
+                field_counts[key] += 1
+        try:
+            domain = urlparse(entry.get("url", "")).netloc.replace("www.", "")
+            if domain:
+                domain_counts[domain] += 1
+        except Exception:
+            pass
+        if entry.get("title"):
+            title_lengths.append(len(entry["title"]))
+        if entry.get("body"):
+            body_lengths.append(len(entry["body"]))
+
+    total = len(entries) or 1
+    expected_fields = [f for f, c in field_counts.items() if c / total >= 0.5]
+    trusted_domains = [d for d, c in domain_counts.items() if c >= 2]
+    avg_title = sum(title_lengths) / len(title_lengths) if title_lengths else 20
+    avg_body = sum(body_lengths) / len(body_lengths) if body_lengths else 100
+
+    return expected_fields, trusted_domains, avg_title, avg_body
 
 
-class Autoencoder(nn.Module):
-    def __init__(self, input_dim=FEATURE_DIM):
-        super().__init__()
-        self.encoder = nn.Sequential(
-            nn.Linear(input_dim, 16),
-            nn.ReLU(),
-            nn.Linear(16, 8),
-            nn.ReLU(),
-            nn.Linear(8, 4),
-        )
-        self.decoder = nn.Sequential(
-            nn.Linear(4, 8),
-            nn.ReLU(),
-            nn.Linear(8, 16),
-            nn.ReLU(),
-            nn.Linear(16, input_dim),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, x):
-        return self.decoder(self.encoder(x))
+def _score_validity(entry: dict, fields: list[str]) -> float:
+    valid = sum(
+        1 for f in fields
+        if isinstance(entry.get(f), str) and entry.get(f).strip()
+    )
+    return round((valid / len(fields)) * 100, 1) if fields else 0.0
 
 
-def train_gatekeeper(n_samples=1000, epochs=50, threshold_percentile=95):
-    samples = [_parse(_normal_line()) for _ in range(n_samples)]
-    samples = [s for s in samples if s]
-
-    X = torch.tensor(samples, dtype=torch.float32)
-    dataset = TensorDataset(X)
-    loader = DataLoader(dataset, batch_size=64, shuffle=True)
-
-    model = Autoencoder()
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
-    criterion = nn.MSELoss()
-
-    model.train()
-    for epoch in range(epochs):
-        total_loss = 0
-        for (batch,) in loader:
-            optimizer.zero_grad()
-            reconstructed = model(batch)
-            loss = criterion(reconstructed, batch)
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-        if (epoch + 1) % 10 == 0:
-            print(f"[E1] Epoch {epoch + 1}/{epochs} — loss: {total_loss / len(loader):.6f}")
-
-    model.eval()
-    with torch.no_grad():
-        recon = model(X)
-        errors = ((recon - X) ** 2).mean(dim=1).numpy()
-
-    threshold = float(torch.tensor(errors).quantile(threshold_percentile / 100))
-    print(f"[E1] Autoencoder trained. Anomaly threshold (p{threshold_percentile}): {threshold:.6f}")
-    return model, threshold
+def _score_completeness(entry: dict, fields: list[str]) -> float:
+    filled = sum(1 for f in fields if entry.get(f))
+    return round((filled / len(fields)) * 100, 1) if fields else 0.0
 
 
-def stream(log_path, model, threshold, db: DatabaseManager, anomaly_handler):
-    tracemalloc.start()
-    processed = safe = flagged = 0
-    start = time.time()
-
-    model.eval()
-
-    while not os.path.exists(log_path):
-        time.sleep(0.1)
-
-    with open(log_path, "r") as f:
-        f.seek(0, 2)
-        while True:
-            line = f.readline()
-            if not line:
-                time.sleep(0.05)
-                continue
-
-            line = line.strip()
-            if not line:
-                continue
-
-            features = _parse(line)
-            processed += 1
-
-            if features is None:
-                continue
-
-            x = torch.tensor([features], dtype=torch.float32)
-            with torch.no_grad():
-                recon = model(x)
-                error = ((recon - x) ** 2).mean().item()
-
-            ts = datetime.now(timezone.utc).isoformat()
-
-            if error <= threshold:
-                safe += 1
-                db.insert_one(db.safe_traffic, {"raw": line, "recon_error": error, "ts": ts})
-            else:
-                flagged += 1
-                db.insert_one(db.active_threats, {"raw": line, "recon_error": error, "ts": ts})
-                anomaly_handler(line)
-
-            if processed % 50 == 0:
-                mem_mb = tracemalloc.get_traced_memory()[1] / 1024 / 1024
-                elapsed = time.time() - start
-                print(f"[E1] processed={processed} safe={safe} flagged={flagged} "
-                      f"rate={processed / elapsed:.1f}/s mem_peak={mem_mb:.2f}MB")
+def _score_popularity(entry: dict, trusted_domains: list[str]) -> float:
+    try:
+        domain = urlparse(entry.get("url", "")).netloc.replace("www.", "")
+    except Exception:
+        return 40.0
+    return 100.0 if any(d in domain for d in trusted_domains) else 40.0
 
 
-def process_queue(model, threshold, db: DatabaseManager, anomaly_handler, batch_size=100):
-    """Drain raw_queue documents deposited by the AI agent."""
-    model.eval()
-    processed = safe = flagged = 0
+def _score_discoverability(entry: dict, avg_title: float, avg_body: float) -> float:
+    title = entry.get("title", "")
+    body = entry.get("body", "")
+    title_score = min(len(title) / avg_title, 1.0) if avg_title else 0.0
+    body_score = min(len(body) / avg_body, 1.0) if avg_body else 0.0
+    return round(((title_score + body_score) / 2) * 100, 1)
 
-    while True:
-        docs = list(db.raw_queue.find({"processed": False}).limit(batch_size))
-        if not docs:
-            break
 
-        ids = [d["_id"] for d in docs]
+def _score_usage(entries: list[dict], entry: dict) -> float:
+    try:
+        domain = urlparse(entry.get("url", "")).netloc.replace("www.", "")
+    except Exception:
+        return 0.0
+    count = sum(
+        1 for e in entries
+        if urlparse(e.get("url", "")).netloc.replace("www.", "") == domain
+    )
+    return min(count * 20, 100.0)
 
-        for doc in docs:
-            signals = doc.get("signals", {})
-            ip = signals["ips"][0] if signals.get("ips") else "0.0.0.0"
-            status = 500 if signals.get("has_exploit") else 200
-            size = signals.get("length", 0)
-            synthetic_log = f'{ip} - - [agent] "GET {doc.get("url", "/")} HTTP/1.1" {status} {size}'
 
-            features = _parse(synthetic_log)
-            processed += 1
-            if features is None:
-                continue
+def score_entry(entry: dict, all_entries: list[dict], criteria: tuple) -> dict:
+    fields, trusted_domains, avg_title, avg_body = criteria
 
-            x = torch.tensor([features], dtype=torch.float32)
-            with torch.no_grad():
-                recon = model(x)
-                error = ((recon - x) ** 2).mean().item()
+    validity        = _score_validity(entry, fields)
+    completeness    = _score_completeness(entry, fields)
+    popularity      = _score_popularity(entry, trusted_domains)
+    discoverability = _score_discoverability(entry, avg_title, avg_body)
+    usage           = _score_usage(all_entries, entry)
 
-            ts = datetime.now(timezone.utc).isoformat()
-            record = {"raw": synthetic_log, "source_url": doc.get("url"), "recon_error": error, "ts": ts}
+    trust_score = round(
+        (validity + completeness + popularity + discoverability + usage) / 5, 1
+    )
+    return {**entry, "trust_score": trust_score, "scores": {
+        "validity": validity,
+        "completeness": completeness,
+        "popularity": popularity,
+        "discoverability": discoverability,
+        "usage": usage,
+    }}
 
-            if error <= threshold:
-                safe += 1
-                db.insert_one(db.safe_traffic, record)
-            else:
-                flagged += 1
-                db.insert_one(db.active_threats, record)
-                anomaly_handler(synthetic_log)
 
-        db.raw_queue.update_many({"_id": {"$in": ids}}, {"$set": {"processed": True}})
-        print(f"[E1] Queue batch: processed={processed} safe={safe} flagged={flagged}")
-
-    print(f"[E1] Queue drained. Total={processed} safe={safe} flagged={flagged}")
+def run(entries: list[dict]) -> tuple[list[dict], list[dict]]:
+    criteria = _detect_criteria(entries)
+    scored = [score_entry(e, entries, criteria) for e in entries]
+    verified  = [e for e in scored if e["trust_score"] >= DISCARD_THRESHOLD]
+    eliminated = [e for e in scored if e["trust_score"] <  DISCARD_THRESHOLD]
+    return verified, eliminated

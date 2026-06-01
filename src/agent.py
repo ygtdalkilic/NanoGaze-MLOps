@@ -9,7 +9,7 @@ import os
 from datetime import datetime, timezone 
 import ollama 
 
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 sys.path.insert(0, os.path.dirname(__file__))
 from db_manager import DatabaseManager
