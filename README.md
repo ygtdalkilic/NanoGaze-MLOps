@@ -1,42 +1,44 @@
-# NanoGaze MLOps (Still in development)
+# NanoGaze MLOps
 
-An MLOps pipeline that tries to minimize LLM or any language model hallucination. A local AI agent searches the internet and dumps findings — the dual-engine architecture fact-checks and filters that dump so only verified, trustworthy data survives.
+An AI agent pipeline that filters hallucinations from web search results. Powered by **Gemini**, backed by **MongoDB Atlas via MCP**, and built for the [Google Cloud Rapid Agent Hackathon](https://googlecloudrapidagenthackathon.devpost.com/).
 
 ---
 
 ## The Problem
 
-LLMs hallucinate. When an AI agent searches and reports findings, it may produce fake IPs, made-up CVE numbers, wrong threat levels, or fabricated claims. You can't trust the raw output. NanoGaze filters it.
+AI agents that search the web and report findings can't be trusted blindly. Raw LLM output contains fabricated claims, unverifiable statistics, and low-credibility content mixed with real data. NanoGaze filters it automatically.
 
 ---
 
 ## How it works
 
 ```
-Phi-3 Mini (Ollama) — searches internet, dumps findings
+Gemini (gemini-2.5-flash) — searches internet, scores credibility, queues findings
         │
         ▼
-MongoDB: raw_queue        ← raw AI findings
+MongoDB Atlas: raw_queue          ← raw agent findings (via MCP)
         │
         ▼
-Engine 1 — noise filter (trust scoring, 5 metrics)
-        │   scores every entry 0–100%
+Engine 1 — Trust Scoring
+        │   scores every entry 0–100% across 5 auto-detected metrics
         │   threshold: 50% — below = eliminated
         │
         ▼
-Engine 2 — fact validator
-        │   cross-checks CVEs against NVD
+Engine 2 — Fact Validation
         │   validates IPs (public vs private/hallucinated)
         │   checks URL reachability
-        │   flags threat level inconsistencies
+        │   flags low-credibility entries with no verifiable signals
         │
    ┌────┴────┐
    ▼         ▼
 Verified   Eliminated (with reason)
         │
         ▼
+MongoDB Atlas: safe_traffic / active_threats  ← results written back via MCP
+        │
+        ▼
 Dashboard (localhost:8080)
-├── Raw Report       — everything the LLM found
+├── Raw Report       — everything the agent found
 ├── Verified Report  — passed both engines
 └── Eliminated Report — removed + reason why
 ```
@@ -55,7 +57,7 @@ Each entry is scored across 5 auto-detected metrics:
 | Discoverability | Title and body length/richness |
 | Usage | How often this source appears in the dump |
 
-Criteria are **auto-detected from the data itself** — no hardcoded rules. Works for any domain.
+Criteria are auto-detected from the data — no hardcoded rules, works for any domain.
 
 ---
 
@@ -63,10 +65,9 @@ Criteria are **auto-detected from the data itself** — no hardcoded rules. Work
 
 | Check | What it does |
 |---|---|
-| CVE validation | Queries NVD API to verify CVE IDs exist |
 | IP validation | Flags entries with only private/loopback IPs |
-| URL reachability | Checks source URL returns a valid response |
-| Threat consistency | Flags "high" threat claims with zero supporting signals |
+| URL reachability | Checks source URL returns a valid HTTP response |
+| Credibility consistency | Flags low-credibility entries with zero supporting signals |
 
 ---
 
@@ -74,51 +75,50 @@ Criteria are **auto-detected from the data itself** — no hardcoded rules. Work
 
 | Layer | Technology |
 |---|---|
-| AI Agent | DuckDuckGo Search + Ollama Phi-3 Mini |
-| Engine 1 | Custom trust scoring (auto-detected criteria) |
-| Engine 2 | NVD API + IP/URL validation |
+| AI Agent | Gemini 2.5 Flash (Google Cloud) |
+| Search | DuckDuckGo |
 | Database | MongoDB Atlas |
-| Dashboard | Python HTTP server (localhost:8080) |
-| Automation | GitHub Actions (manual trigger) |
+| DB Integration | MongoDB MCP Server |
+| Engine 1 | Custom trust scoring (auto-detected criteria) |
+| Engine 2 | IP/URL validation + credibility consistency |
+| Dashboard | Python HTTP server |
 
 ---
 
-## What you need
+## Setup
 
-- Python 3.13+
-- [Ollama](https://ollama.com) with `phi3:mini` pulled
-- MongoDB Atlas free cluster
-- `pip install -r requirements.txt`
-
----
-
-## Getting started
+**Requirements:** Python 3.13+, Node.js (for MongoDB MCP server)
 
 ```bash
 git clone https://github.com/ygtdalkilic/NanoGaze-MLOps.git
 cd NanoGaze-MLOps
+python -m venv .venv
+.venv\Scripts\activate
 pip install -r requirements.txt
+npm install -g mongodb-mcp-server
 ```
 
-```powershell
-ollama pull phi3:mini
-$env:MONGO_URI = "mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/"
+Copy `.env.example` to `.env` and fill in your keys:
+
+```env
+GEMINI_API_KEY=your_key_here
+MONGO_URI=mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/
 ```
 
 ---
 
 ## Run
 
-**1. Run the AI agent** (searches internet, queues findings into MongoDB):
 ```powershell
-& ".venv\Scripts\python.exe" src\agent.py
+.venv\Scripts\python.exe run.py
 ```
 
-**2. Launch the dashboard** (runs both engines, shows reports):
+Open `http://localhost:8080` — click **Run Pipeline** to process the queue.
+
+To skip the agent and only run the pipeline:
 ```powershell
-& ".venv\Scripts\python.exe" src\dashboard.py
+.venv\Scripts\python.exe run.py --skip-agent
 ```
-Then open `http://localhost:8080` and click **Run Pipeline**.
 
 ---
 
@@ -126,18 +126,23 @@ Then open `http://localhost:8080` and click **Run Pipeline**.
 
 ```
 src/
-├── agent.py       # AI agent — DuckDuckGo + Phi-3 Mini
-├── engine_1.py    # noise filter (trust scoring, auto-detected criteria)
-├── engine_2.py    # fact validator (CVE, IP, URL, threat consistency)
-├── pipeline.py    # orchestrator — Engine 1 → Engine 2 → reports
-├── reporter.py    # generates 3 HTML reports
-├── dashboard.py   # localhost:8080 dashboard
-└── db_manager.py  # MongoDB connection
+├── agent.py        # Gemini agent — searches, scores credibility, queues findings
+├── engine_1.py     # trust scoring (auto-detected criteria)
+├── engine_2.py     # fact validator (IP, URL, credibility consistency)
+├── pipeline.py     # orchestrator — Engine 1 → Engine 2 → reports
+├── reporter.py     # generates 3 HTML reports + history
+├── dashboard.py    # web dashboard
+└── mcp_client.py   # MongoDB MCP client
 
-reports/           # generated at runtime (gitignored)
+queries.txt         # search queries (one per line)
+prompt.txt          # Gemini credibility assessment prompt
+run.py              # single entry point
+
+reports/            # generated at runtime
 ├── report_raw.html
 ├── report_verified.html
-└── report_eliminated.html
+├── report_eliminated.html
+└── history/        # auto-archived on every run
 ```
 
 ---
@@ -146,9 +151,9 @@ reports/           # generated at runtime (gitignored)
 
 | Collection | Contents |
 |---|---|
-| `raw_queue` | Raw AI agent findings, pending pipeline |
-| `safe_traffic` | Reserved |
-| `active_threats` | Reserved |
+| `raw_queue` | Raw agent findings pending pipeline |
+| `safe_traffic` | Verified entries that passed both engines |
+| `active_threats` | Eliminated entries with reason |
 
 ---
 

@@ -1,8 +1,25 @@
 import os
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
 REPORTS_DIR = Path(os.getenv("REPORTS_DIR", "reports"))
+HISTORY_DIR = REPORTS_DIR / "history"
+
+REPORT_FILES = ["report_raw.html", "report_verified.html", "report_eliminated.html"]
+
+
+def save_to_history():
+    if not any((REPORTS_DIR / f).exists() for f in REPORT_FILES):
+        return None
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
+    dest = HISTORY_DIR / ts
+    dest.mkdir(parents=True, exist_ok=True)
+    for f in REPORT_FILES:
+        src = REPORTS_DIR / f
+        if src.exists():
+            shutil.copy2(src, dest / f)
+    return dest
 
 
 def _trust_color(score: float) -> str:
@@ -44,7 +61,7 @@ def _eliminated_rows(entries: list[dict]) -> str:
         if e.get("eliminated_by") == "engine_2":
             fc = e.get("fact_check", {})
             details = fc.get("details", {})
-            reason = "Engine 2 — " + "; ".join(details.values()) if details else "Engine 2 — Fact check failed"
+            reason = "Engine 2 — " + "; ".join(details.values()) if details else "Engine 2 — Credibility check failed"
         else:
             low = [k for k, v in e.get("scores", {}).items() if v < 50]
             reason = f"Engine 1 — Low scores in: {', '.join(low)}" if low else "Engine 1 — Below threshold"
@@ -93,6 +110,8 @@ def _html(title: str, subtitle: str, headers: list[str], body: str) -> str:
 
 def generate(raw: list[dict], verified: list[dict], eliminated: list[dict]):
     REPORTS_DIR.mkdir(exist_ok=True)
+    for f in REPORT_FILES:
+        (REPORTS_DIR / f).unlink(missing_ok=True)
 
     Path(REPORTS_DIR / "report_raw.html").write_text(_html(
         "Raw Report",
@@ -115,5 +134,6 @@ def generate(raw: list[dict], verified: list[dict], eliminated: list[dict]):
         _eliminated_rows(eliminated)
     ), encoding="utf-8")
 
+    dest = save_to_history()
     print(f"[REPORT] Raw: {len(raw)} | Verified: {len(verified)} | Eliminated: {len(eliminated)}")
-    print(f"[REPORT] Saved to {REPORTS_DIR.resolve()}")
+    print(f"[REPORT] Saved to {REPORTS_DIR.resolve()} | History: {dest}")

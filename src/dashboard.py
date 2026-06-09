@@ -1,11 +1,15 @@
 import sys
 import os
 import json
+from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent.parent / ".env")
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from pathlib import Path
 import pipeline
+import reporter
 
 REPORTS_DIR = Path(os.getenv("REPORTS_DIR", "reports"))
 
@@ -269,7 +273,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <h2>Raw Dump</h2>
         <p>{sub_raw}</p>
       </div>
-      <button class="run-btn" onclick="runPipeline(this)">Run Pipeline</button>
+      <div style="display:flex;gap:10px;">
+        <button class="run-btn" onclick="runPipeline(this)">Run Pipeline</button>
+        <button class="run-btn" style="background:var(--card);color:var(--yellow);border:1px solid var(--yellow);" onclick="saveHistory(this)">Save to History</button>
+      </div>
     </div>
     <div class="table-wrap">{table_raw}</div>
   </div>
@@ -309,12 +316,26 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     btn.disabled = true;
     btn.textContent = 'Running...';
     fetch('/run').then(r => r.json()).then(data => {{
-      showToast(data.message);
-      btn.textContent = 'Reload to refresh';
+      showToast(data.message + ' — reloading...');
+      setTimeout(() => location.reload(), 2000);
     }}).catch(() => {{
       showToast('Error running pipeline');
       btn.disabled = false;
       btn.textContent = 'Run Pipeline';
+    }});
+  }}
+
+  function saveHistory(btn) {{
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+    fetch('/save').then(r => r.json()).then(data => {{
+      showToast(data.message);
+      btn.disabled = false;
+      btn.textContent = 'Save to History';
+    }}).catch(() => {{
+      showToast('Error saving');
+      btn.disabled = false;
+      btn.textContent = 'Save to History';
     }});
   }}
 
@@ -336,6 +357,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/run":
             self._run_pipeline()
+        elif self.path == "/save":
+            self._save_history()
         else:
             self._serve_dashboard()
 
@@ -360,6 +383,7 @@ class Handler(BaseHTTPRequestHandler):
         )
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(page.encode("utf-8"))
 
@@ -373,6 +397,14 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             msg = f"Error: {e}"
 
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"message": msg}).encode())
+
+    def _save_history(self):
+        dest = reporter.save_to_history()
+        msg = f"Saved to history/{dest.name}" if dest else "No reports to save"
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()

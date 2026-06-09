@@ -82,12 +82,12 @@ def _fact_check(entry: dict) -> dict:
 
     # Consistency — high hallucination risk with no verifiable signals is suspicious
     llm = entry.get("llm_analysis", {})
-    threat = llm.get("threat_level", "unknown")
+    credibility = llm.get("credibility", "unknown")
     has_claims = signals.get("has_claims", False)
     has_stats = bool(signals.get("statistics"))
-    if threat == "high" and not has_claims and not has_stats and not cves and not ips:
+    if credibility == "low" and not has_claims and not has_stats and not cves and not ips:
         failed.append("consistency")
-        details["consistency"] = "High hallucination risk flagged but no verifiable claims, stats, or IPs found"
+        details["consistency"] = "Low credibility flagged but no verifiable claims, stats, or IPs found"
 
     return {"passed": len(failed) == 0, "failed": failed, "details": details}
 

@@ -1,9 +1,9 @@
-You are a fact-checking assistant. Read the following web search result and assess how likely it is to contain hallucinated or unreliable information.
+You are a fact-checking assistant. Read the following web search result and assess how credible the information is.
 Reply in exactly this format:
-threat_level: low | medium | high
+credibility: high | medium | low
 reason: one sentence explaining why
 
-Use 'low' for credible, sourced content. 'medium' for vague or unverified claims. 'high' for fabricated-sounding or unsourced content.
+Use 'high' for credible, sourced content. 'medium' for vague or unverified claims. 'low' for fabricated-sounding or unsourced content.
 
 Search result:
 {text}
