@@ -8,6 +8,7 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 sys.path.insert(0, os.path.dirname(__file__))
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import agent
 import pipeline
 import reporter
 
@@ -274,6 +275,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <p>{sub_raw}</p>
       </div>
       <div style="display:flex;gap:10px;">
+        <button class="run-btn" style="background:var(--card);color:var(--yellow);border:1px solid var(--yellow);" onclick="runAgent(this)">Run Agent</button>
         <button class="run-btn" onclick="runPipeline(this)">Run Pipeline</button>
         <button class="run-btn" style="background:var(--card);color:var(--yellow);border:1px solid var(--yellow);" onclick="saveHistory(this)">Save to History</button>
       </div>
@@ -310,6 +312,20 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.getElementById('panel-' + name).classList.add('active');
     el.classList.add('active');
+  }}
+
+  function runAgent(btn) {{
+    btn.disabled = true;
+    btn.textContent = 'Running...';
+    fetch('/agent').then(r => r.json()).then(data => {{
+      showToast(data.message);
+      btn.disabled = false;
+      btn.textContent = 'Run Agent';
+    }}).catch(() => {{
+      showToast('Error running agent');
+      btn.disabled = false;
+      btn.textContent = 'Run Agent';
+    }});
   }}
 
   function runPipeline(btn) {{
@@ -357,6 +373,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/run":
             self._run_pipeline()
+        elif self.path == "/agent":
+            self._run_agent()
         elif self.path == "/save":
             self._save_history()
         else:
@@ -397,6 +415,17 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             msg = f"Error: {e}"
 
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"message": msg}).encode())
+
+    def _run_agent(self):
+        try:
+            agent.run()
+            msg = "Agent done — queue populated. Click Run Pipeline to process."
+        except Exception as e:
+            msg = f"Error: {e}"
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
