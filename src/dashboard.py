@@ -11,6 +11,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import agent
 import pipeline
 import reporter
+import config_store
 
 REPORTS_DIR = Path(os.getenv("REPORTS_DIR", "reports"))
 
@@ -265,6 +266,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <button class="tab active" onclick="showTab('raw', this)">Raw Data</button>
   <button class="tab" onclick="showTab('verified', this)">Verified</button>
   <button class="tab" onclick="showTab('eliminated', this)">Eliminated</button>
+  <button class="tab" onclick="showTab('settings', this); loadSettings()">Settings</button>
 </div>
 
 <div class="content">
@@ -301,6 +303,28 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
     </div>
     <div class="table-wrap">{table_eliminated}</div>
+  </div>
+
+  <div class="panel" id="panel-settings">
+    <div class="panel-header">
+      <div><h2>Settings</h2><p>Edit prompt and search queries stored in MongoDB</p></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <span style="color:var(--yellow);font-size:14px;font-weight:600;letter-spacing:1px;text-transform:uppercase;">LLM Prompt</span>
+          <button class="run-btn" onclick="savePrompt(this)">Save Prompt</button>
+        </div>
+        <textarea id="prompt-editor" spellcheck="false" style="width:100%;height:320px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:14px;font-family:monospace;font-size:13px;resize:vertical;outline:none;line-height:1.6;"></textarea>
+      </div>
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <span style="color:var(--yellow);font-size:14px;font-weight:600;letter-spacing:1px;text-transform:uppercase;">Search Queries</span>
+          <button class="run-btn" onclick="saveQueries(this)">Save Queries</button>
+        </div>
+        <textarea id="queries-editor" spellcheck="false" style="width:100%;height:320px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:14px;font-family:monospace;font-size:13px;resize:vertical;outline:none;line-height:1.6;" placeholder="One query per line"></textarea>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -355,6 +379,31 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }});
   }}
 
+  function loadSettings() {{
+    fetch('/prompt').then(r => r.json()).then(d => {{
+      document.getElementById('prompt-editor').value = d.value;
+    }});
+    fetch('/queries').then(r => r.json()).then(d => {{
+      document.getElementById('queries-editor').value = d.value;
+    }});
+  }}
+
+  function savePrompt(btn) {{
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+    fetch('/prompt', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body: JSON.stringify({{value: document.getElementById('prompt-editor').value}})}})
+      .then(r => r.json()).then(d => {{ showToast(d.message); btn.disabled = false; btn.textContent = 'Save Prompt'; }})
+      .catch(() => {{ showToast('Error saving prompt'); btn.disabled = false; btn.textContent = 'Save Prompt'; }});
+  }}
+
+  function saveQueries(btn) {{
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+    fetch('/queries', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body: JSON.stringify({{value: document.getElementById('queries-editor').value}})}})
+      .then(r => r.json()).then(d => {{ showToast(d.message); btn.disabled = false; btn.textContent = 'Save Queries'; }})
+      .catch(() => {{ showToast('Error saving queries'); btn.disabled = false; btn.textContent = 'Save Queries'; }});
+  }}
+
   function showToast(msg) {{
     const t = document.getElementById('toast');
     t.textContent = msg;
@@ -377,8 +426,28 @@ class Handler(BaseHTTPRequestHandler):
             self._run_agent()
         elif self.path == "/save":
             self._save_history()
+        elif self.path == "/prompt":
+            self._get_config("prompt", agent._load_prompt())
+        elif self.path == "/queries":
+            self._get_config("queries", agent._queries_file.read_text() if agent._queries_file.exists() else "")
         else:
             self._serve_dashboard()
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(length))
+        if self.path == "/prompt":
+            config_store.save("prompt", body.get("value", ""))
+            msg = "Prompt saved to MongoDB"
+        elif self.path == "/queries":
+            config_store.save("queries", body.get("value", ""))
+            msg = "Queries saved to MongoDB"
+        else:
+            msg = "Unknown endpoint"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"message": msg}).encode())
 
     def _serve_dashboard(self):
         raw_html, verified_html, eliminated_html = load_reports()
@@ -430,6 +499,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(json.dumps({"message": msg}).encode())
+
+    def _get_config(self, key: str, default: str):
+        value = config_store.get(key, default)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"value": value}).encode())
 
     def _save_history(self):
         dest = reporter.save_to_history()
