@@ -12,6 +12,7 @@ hpack==4.1.0
 hyperframe==6.1.0
 idna==3.17
 lxml==6.1.1
+google-adk
 google-genai
 mcp
 python-dotenv
