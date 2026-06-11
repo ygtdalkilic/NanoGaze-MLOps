@@ -49,26 +49,36 @@ def _score_validity(entry: dict) -> float:
     return round((checks / 3) * 100, 1)
 
 
-def _score_reputation(entry: dict) -> float:
+REPUTATION_MIN_SAMPLES = int(os.getenv("REPUTATION_MIN_SAMPLES", "3"))
+
+
+def _base_reputation(domain: str) -> float:
+    if any(domain == d or domain.endswith("." + d) for d in TRUSTED_DOMAINS):
+        return 100.0
+    for tld in REPUTABLE_TLDS:
+        if domain.endswith(tld):
+            return 65.0
+    if "." in domain and not domain.replace(".", "").isdigit():
+        return 40.0
+    return 10.0
+
+
+def _score_reputation(entry: dict, memory: dict | None = None) -> float:
     try:
         domain = urlparse(entry.get("url", "")).netloc.lower().replace("www.", "")
     except Exception:
         return 0.0
-
     if not domain:
         return 0.0
 
-    if any(domain == d or domain.endswith("." + d) for d in TRUSTED_DOMAINS):
-        return 100.0
+    base = _base_reputation(domain)
 
-    for tld in REPUTABLE_TLDS:
-        if domain.endswith(tld):
-            return 65.0
-
-    if "." in domain and not domain.replace(".", "").isdigit():
-        return 40.0
-
-    return 10.0
+    # Blend in learned reputation: domains we've seen enough times are scored
+    # by their actual track record, not just a static allowlist.
+    rec = (memory or {}).get(domain)
+    if rec and rec.get("seen", 0) >= REPUTATION_MIN_SAMPLES:
+        return round(0.5 * base + 0.5 * rec["avg_trust"], 1)
+    return base
 
 
 def _score_richness(entry: dict) -> float:
@@ -77,10 +87,10 @@ def _score_richness(entry: dict) -> float:
     return round(((title_score + body_score) / 2) * 100, 1)
 
 
-def _score(entry: dict) -> dict:
+def _score(entry: dict, memory: dict | None = None) -> dict:
     completeness = _score_completeness(entry)
     validity     = _score_validity(entry)
-    reputation   = _score_reputation(entry)
+    reputation   = _score_reputation(entry, memory)
     richness     = _score_richness(entry)
 
     trust_score = round(
@@ -98,9 +108,9 @@ def _score(entry: dict) -> dict:
     }}
 
 
-def run(entries: list[dict]) -> tuple[list[dict], list[dict]]:
+def run(entries: list[dict], memory: dict | None = None) -> tuple[list[dict], list[dict]]:
     unique = _dedup(entries)
-    scored = [_score(e) for e in unique]
+    scored = [_score(e, memory) for e in unique]
     verified  = [e for e in scored if e["trust_score"] >= DISCARD_THRESHOLD]
     eliminated = [e for e in scored if e["trust_score"] <  DISCARD_THRESHOLD]
     return verified, eliminated

@@ -1,4 +1,6 @@
 import asyncio
+import json
+import os
 import queue as qmod
 import threading
 import uuid
@@ -54,22 +56,77 @@ def _analyze(goal: str, text: str) -> dict:
     return {"relevant": relevant, "credibility": credibility, "reason": reason}
 
 
-def _synthesize(goal: str, docs: list) -> str:
-    sources = "\n\n".join(
-        f"Title: {d['title']}\nURL: {d['url']}\nTrust: {d.get('trust_score', 0)}%\nContent: {d['body'][:400]}"
-        for d in docs[:10]
+_MIN_DOMAINS = int(os.getenv("CORROBORATION_MIN_DOMAINS", "2"))
+
+
+def _parse_json(raw: str) -> dict:
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.split("```", 2)[1]
+        if text.startswith("json"):
+            text = text[4:]
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end != -1:
+        text = text[start:end + 1]
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def _corroborate(goal: str, docs: list) -> tuple[list, list]:
+    listing = "\n\n".join(
+        f"[{i + 1}] domain={_domain(d['url'])} | {d['title']}\n{d['body'][:500]}"
+        for i, d in enumerate(docs[:12])
     )
     prompt = (
-        f"Research goal: {goal}\n\n"
-        f"Verified sources (already passed a dual-engine hallucination filter):\n{sources}\n\n"
-        "Write a research brief with:\n"
-        "- 3-5 key findings as bullet points\n"
-        "- Overall confidence level (high/medium/low)\n"
-        "- Any important caveats\n\n"
-        "Use only information from the sources above. Be concise and factual."
+        f'Research goal: "{goal}"\n\n'
+        f"Verified sources (each tagged [n] with its domain):\n{listing}\n\n"
+        "Extract the key factual findings that answer the goal. For EACH finding, list the source numbers "
+        "that explicitly support it. Separately, identify any findings where the sources CONTRADICT each other.\n"
+        "Respond ONLY with JSON, no markdown, in this exact shape:\n"
+        '{"findings":[{"claim":"<one sentence>","sources":[1,2]}],'
+        '"contradictions":[{"claim":"<one sentence describing the disagreement>","sources":[3,4]}]}'
     )
     response = agent._client.models.generate_content(model=agent._model, contents=prompt)
-    return response.text
+    data = _parse_json(response.text)
+
+    def domains_for(idxs):
+        return {_domain(docs[i - 1]["url"]) for i in idxs if isinstance(i, int) and 1 <= i <= len(docs)}
+
+    findings = []
+    for f in data.get("findings", []):
+        idxs = [i for i in f.get("sources", []) if isinstance(i, int) and 1 <= i <= len(docs)]
+        doms = domains_for(idxs)
+        findings.append({
+            "claim": f.get("claim", "").strip(),
+            "support": len(doms),
+            "corroborated": len(doms) >= _MIN_DOMAINS,
+            "urls": [docs[i - 1]["url"] for i in idxs],
+        })
+    contradictions = [c.get("claim", "").strip() for c in data.get("contradictions", []) if c.get("claim")]
+    return [f for f in findings if f["claim"]], contradictions
+
+
+def _confidence(findings: list) -> str:
+    if not findings:
+        return "low"
+    ratio = sum(1 for f in findings if f["corroborated"]) / len(findings)
+    return "high" if ratio >= 0.6 else "medium" if ratio >= 0.3 else "low"
+
+
+def _format_brief(goal: str, findings: list, contradictions: list) -> str:
+    if not findings:
+        return "No corroborated findings could be extracted from the verified sources."
+    lines = [f"Confidence: {_confidence(findings).upper()} (based on cross-source corroboration)\n", "Key findings:"]
+    for f in findings:
+        tag = f"corroborated by {f['support']} independent sources" if f["corroborated"] else f"single-source ({f['support']})"
+        lines.append(f"- {f['claim']}  [{tag}]")
+    if contradictions:
+        lines.append("\nConflicting claims (sources disagree):")
+        for c in contradictions:
+            lines.append(f"- {c}")
+    return "\n".join(lines)
 
 
 def _domain(url: str) -> str:
@@ -138,8 +195,14 @@ async def _run(goal: str, emit) -> dict:
             emit({"type": "done", "msg": "No results found", "session": empty})
             return {}
 
-        emit({"type": "engine", "msg": f"Engine 1 — trust scoring {len(docs)} sources..."})
-        e1_verified, e1_eliminated = engine_1.run(docs)
+        memory = {}
+        for rec in await mcp.find_all("domain_reputation"):
+            seen = rec.get("seen", 0)
+            if seen:
+                memory[rec["domain"]] = {"seen": seen, "avg_trust": round(rec.get("trust_sum", 0) / seen, 1)}
+
+        emit({"type": "engine", "msg": f"Engine 1 — trust scoring {len(docs)} sources (using {len(memory)} learned domains)..."})
+        e1_verified, e1_eliminated = engine_1.run(docs, memory)
         emit({"type": "engine", "msg": f"Engine 1 — {len(e1_verified)} passed, {len(e1_eliminated)} filtered (low trust)"})
 
         emit({"type": "engine", "msg": f"Engine 2 — fact-validating {len(e1_verified)} sources (IPs, URLs, consistency)..."})
@@ -163,15 +226,22 @@ async def _run(goal: str, emit) -> dict:
         reporter.generate(docs, e2_verified, all_eliminated)
 
         if e2_verified:
-            emit({"type": "progress", "msg": "Synthesizing research brief from verified sources..."})
-            brief = _synthesize(goal, e2_verified)
+            emit({"type": "progress", "msg": "Cross-checking claims across independent sources..."})
+            findings, contradictions = _corroborate(goal, e2_verified)
+            brief = _format_brief(goal, findings, contradictions)
+            corr = sum(1 for f in findings if f["corroborated"])
+            emit({"type": "progress", "msg": f"Corroboration — {corr}/{len(findings)} findings backed by ≥{_MIN_DOMAINS} independent sources"})
         else:
+            findings, contradictions = [], []
             brief = "No sources survived the dual-engine filter. Every result was flagged as low-trust or failed fact validation. Try broadening your goal or changing the time filter."
 
         session = {
             "goal": goal,
             "queries": queries,
             "brief": brief,
+            "findings": findings,
+            "contradictions": contradictions,
+            "confidence": _confidence(findings),
             "sources": [
                 {"url": d["url"], "title": d["title"], "credibility": d.get("llm_analysis", {}).get("credibility", "unknown"), "trust_score": d.get("trust_score", 0)}
                 for d in e2_verified
