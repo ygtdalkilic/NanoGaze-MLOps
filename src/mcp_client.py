@@ -31,7 +31,9 @@ def _to_standard_uri(uri: str) -> str:
         pass
 
     params = "ssl=true" + (f"&{opts}" if opts else "") + "&retryWrites=true&w=majority"
-    return f"mongodb://{creds}@{hosts}/?{params}"
+    std = f"mongodb://{creds}@{hosts}/?{params}"
+    print(f"[MCP] resolved srv -> mongodb://***@{hosts}/?{params}", flush=True)
+    return std
 
 
 _server_params = StdioServerParameters(
