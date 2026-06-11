@@ -5,9 +5,24 @@ from google.adk.agents import Agent
 _BASE_URL = os.getenv("NANOGAZE_URL", "https://nanogaze-42024494530.us-central1.run.app")
 
 
+def run_research(goal: str) -> dict:
+    """Run a full verified-research mission for a user's goal. This is the primary tool.
+    Gemini generates targeted search queries, searches the web, runs every source through a
+    dual-engine hallucination filter (Engine 1 trust scoring, Engine 2 fact validation), and
+    synthesizes a research brief from only the verified sources. Everything is stored in MongoDB.
+    Returns the brief, verified sources with trust scores, and verified/eliminated counts.
+    Call this whenever the user asks a research question or wants verified information on a topic."""
+    try:
+        resp = requests.post(f"{_BASE_URL}/research/sync", json={"goal": goal}, timeout=600)
+        return resp.json()
+    except Exception as e:
+        return {"message": f"Error: {e}"}
+
+
 def run_agent_search() -> dict:
-    """Search the web for new content using Gemini and queue it into MongoDB for processing.
-    Call this when the user wants to fetch fresh data or populate the pipeline."""
+    """Search the web with Gemini and queue findings into MongoDB without filtering.
+    Lower-level than run_research. Call this only when the user explicitly wants to fetch
+    raw data without running the full filter-and-synthesize mission."""
     try:
         resp = requests.get(f"{_BASE_URL}/agent", timeout=300)
         return resp.json()
@@ -44,18 +59,19 @@ root_agent = Agent(
         "using a dual-engine pipeline backed by MongoDB Atlas."
     ),
     instruction=(
-        "You are the NanoGaze orchestrator. Your job is to help users run and understand "
-        "the hallucination filter pipeline.\n\n"
-        "You have three tools:\n"
-        "- run_agent_search: searches the web with Gemini and queues findings into MongoDB\n"
-        "- run_hallucination_filter: processes the queue through Engine 1 (trust scoring) "
-        "and Engine 2 (fact validation), writing verified results to safe_traffic and "
-        "eliminated results to active_threats in MongoDB\n"
-        "- save_report_to_history: archives the current reports\n\n"
-        "When a user asks to run the full pipeline, call run_agent_search first, "
-        "then run_hallucination_filter. Always report back what was found: "
-        "how many entries were verified vs eliminated and why.\n\n"
-        "Be concise and specific — tell the user exactly what the pipeline did."
+        "You are the NanoGaze orchestrator. You help users get verified, hallucination-free "
+        "answers to research questions.\n\n"
+        "Your primary tool is run_research(goal): given a research goal, it generates search "
+        "queries, searches the web, filters every source through Engine 1 (trust scoring) and "
+        "Engine 2 (fact validation), and synthesizes a brief from only the verified sources — "
+        "all stored in MongoDB. Use this for almost every request.\n\n"
+        "Lower-level tools, only when explicitly asked:\n"
+        "- run_agent_search: queue raw findings without filtering\n"
+        "- run_hallucination_filter: process whatever is already queued\n"
+        "- save_report_to_history: archive current reports\n\n"
+        "When a user asks anything researchable, call run_research with a clear goal. Then "
+        "report the brief, how many sources were verified vs eliminated, and cite the verified "
+        "source URLs. Be concise and specific."
     ),
-    tools=[run_agent_search, run_hallucination_filter, save_report_to_history],
+    tools=[run_research, run_agent_search, run_hallucination_filter, save_report_to_history],
 )

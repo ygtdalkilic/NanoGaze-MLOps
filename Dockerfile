@@ -21,4 +21,4 @@ ENV DASHBOARD_PORT=8080
 
 EXPOSE 8080
 
-CMD ["python", "run.py", "--skip-agent"]
+CMD ["python", "run.py"]

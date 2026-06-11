@@ -1,72 +1,109 @@
 # NanoGaze MLOps
 
-An AI agent pipeline that filters hallucinations from web search results. Powered by **Gemini**, backed by **MongoDB Atlas via MCP**, and built for the [Google Cloud Rapid Agent Hackathon](https://googlecloudrapidagenthackathon.devpost.com/).
+A goal-driven research agent that returns **verified, hallucination-free** answers. You give it a research goal; it plans the searches, runs every source through a dual-engine hallucination filter, and synthesizes a cited brief from only what survives.
+
+Powered by **Gemini 2.5 Flash**, backed by **MongoDB Atlas via MCP**, built for the [Google Cloud Rapid Agent Hackathon](https://googlecloudrapidagenthackathon.devpost.com/) — **MongoDB track**.
 
 ---
 
 ## The Problem
 
-AI agents that search the web and report findings can't be trusted blindly. Raw LLM output contains fabricated claims, unverifiable statistics, and low-credibility content mixed with real data. NanoGaze filters it automatically.
+AI agents that search the web and report findings can't be trusted blindly. Raw LLM output mixes fabricated claims, dead links, fake IPs, non-existent CVEs, and unverifiable statistics in with real data. NanoGaze filters it automatically and only synthesizes an answer from sources that pass.
 
 ---
 
-## How it works
+## What it does
+
+You type a research goal. The agent then:
 
 ```
-Gemini (gemini-2.5-flash) — searches internet, scores credibility, queues findings
-        │
-        ▼
-MongoDB Atlas: raw_queue          ← raw agent findings (via MCP)
-        │
-        ▼
-Engine 1 — Trust Scoring
-        │   scores every entry 0–100% across 5 auto-detected metrics
-        │   threshold: 50% — below = eliminated
-        │
-        ▼
-Engine 2 — Fact Validation
-        │   validates IPs (public vs private/hallucinated)
-        │   checks URL reachability
-        │   flags low-credibility entries with no verifiable signals
-        │
-   ┌────┴────┐
-   ▼         ▼
-Verified   Eliminated (with reason)
-        │
-        ▼
-MongoDB Atlas: safe_traffic / active_threats  ← results written back via MCP
-        │
-        ▼
-Dashboard (localhost:8080)
-├── Raw Report       — everything the agent found
-├── Verified Report  — passed both engines
-└── Eliminated Report — removed + reason why
+1. PLAN      Gemini turns your goal into targeted search queries
+2. SEARCH    DuckDuckGo fetches sources (recency filter configurable)
+3. SCORE     Each source gets a Gemini credibility read
+4. ENGINE 1  Trust scoring — 4 auto-detected metrics, drops low-trust sources
+5. ENGINE 2  Fact validation — IPs, URL reachability, CVEs, consistency
+6. SYNTHESIZE  Gemini writes a brief from ONLY the verified survivors
+7. REMEMBER  Per-domain reputation accumulates in MongoDB across sessions
 ```
+
+Everything streams live to the dashboard, and every artifact — raw sources, verified, eliminated, the brief, domain reputation — is stored in MongoDB Atlas through the MCP server.
+
+---
+
+## Why this is an agent, not a chatbot
+
+- **It plans** — query generation is goal-dependent and non-deterministic, not a fixed list
+- **It uses tools** — web search, a dual-engine filter, and MongoDB through MCP
+- **It acts** — writes verified/eliminated sets to MongoDB, generates reports, exports briefs
+- **It remembers** — domain reputation is long-term memory that improves trust judgments over time
+- **You stay in control** — editable prompt, queries, recency filter, and a live view of every step
+
+---
+
+## Architecture
+
+```
+                       Research Goal
+                            │
+                            ▼
+              Gemini — generates search queries
+                            │
+                            ▼
+                  DuckDuckGo web search
+                            │
+                            ▼
+            Gemini — per-source credibility read
+                            │
+                            ▼
+   MongoDB Atlas (via MCP): raw_queue ── reports/report_raw.html
+                            │
+                            ▼
+              Engine 1 — Trust Scoring (0–100%)
+                 completeness · validity · reputation · richness
+                            │
+                            ▼
+              Engine 2 — Fact Validation
+                 IP sanity · URL reachability · CVE lookup · consistency
+                            │
+                   ┌────────┴────────┐
+                   ▼                 ▼
+              safe_traffic      active_threats        ← MongoDB via MCP
+                   │                 │
+                   ▼                 ▼
+              Gemini — synthesizes verified brief
+                            │
+                            ▼
+         research_sessions + domain_reputation        ← MongoDB via MCP
+```
+
+---
+
+## Two ways to run it
+
+**1. Dashboard** (`localhost:8080`) — type a goal in the Research tab, watch the pipeline stream live, get a cited brief with verified sources. Tabs: Research · Raw Data · Verified · Eliminated · History · Reputation · Prompt.
+
+**2. Google ADK agent** (`adk web`) — chat with the agent; its primary tool `run_research(goal)` calls the same hosted pipeline on Cloud Run. Same mission, conversational entry point.
 
 ---
 
 ## Engine 1 — Trust Scoring
 
-Each entry is scored across 5 auto-detected metrics:
-
 | Metric | What it measures |
 |---|---|
-| Validity | Fields are non-empty and correctly typed |
 | Completeness | How many expected fields have data |
-| Popularity | Source domain reliability |
-| Discoverability | Title and body length/richness |
-| Usage | How often this source appears in the dump |
+| Validity | URL well-formed, title/body substantive |
+| Reputation | Source domain reliability |
+| Richness | Title and body length/depth |
 
-Criteria are auto-detected from the data — no hardcoded rules, works for any domain.
-
----
+Weighted into a 0–100% trust score; below `ENGINE1_THRESHOLD` (default 50) is eliminated. Criteria are auto-detected — domain-agnostic.
 
 ## Engine 2 — Fact Validation
 
 | Check | What it does |
 |---|---|
 | IP validation | Flags entries with only private/loopback IPs |
-| URL reachability | Checks source URL returns a valid HTTP response |
+| URL reachability | Confirms the source URL returns a valid response |
+| CVE lookup | Verifies any CVE mentioned exists in the NVD database |
 | Credibility consistency | Flags low-credibility entries with zero supporting signals |
 
 ---
@@ -75,19 +112,21 @@ Criteria are auto-detected from the data — no hardcoded rules, works for any d
 
 | Layer | Technology |
 |---|---|
-| AI Agent | Gemini 2.5 Flash (Google Cloud) |
+| Reasoning / synthesis | Gemini 2.5 Flash (Google) |
+| Agent framework | Google ADK (Agent Builder) |
 | Search | DuckDuckGo |
 | Database | MongoDB Atlas |
-| DB Integration | MongoDB MCP Server |
-| Engine 1 | Custom trust scoring (auto-detected criteria) |
-| Engine 2 | IP/URL validation + credibility consistency |
-| Dashboard | Python HTTP server |
+| DB integration | **MongoDB MCP Server** |
+| Engine 1 | Trust scoring (auto-detected criteria) |
+| Engine 2 | IP/URL/CVE validation + consistency |
+| Dashboard | Python HTTP server + SSE live stream |
+| Hosting | Google Cloud Run |
 
 ---
 
 ## Setup
 
-**Requirements:** Python 3.13+, Node.js (for MongoDB MCP server)
+**Requirements:** Python 3.13+, Node.js 20+ (for the MongoDB MCP server)
 
 ```bash
 git clone https://github.com/ygtdalkilic/NanoGaze-MLOps.git
@@ -113,11 +152,12 @@ MONGO_URI=mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/
 .venv\Scripts\python.exe run.py
 ```
 
-Open `http://localhost:8080` — click **Run Pipeline** to process the queue.
+Open `http://localhost:8080`, go to the **Research** tab, type a goal, and hit **Start Research**.
 
-To skip the agent and only run the pipeline:
+To run the ADK agent instead:
+
 ```powershell
-.venv\Scripts\python.exe run.py --skip-agent
+adk web .
 ```
 
 ---
@@ -126,23 +166,26 @@ To skip the agent and only run the pipeline:
 
 ```
 src/
-├── agent.py        # Gemini agent — searches, scores credibility, queues findings
+├── agent.py        # Gemini search + per-source credibility analysis
+├── research.py     # goal → queries → search → dual-engine → brief (live streamed)
 ├── engine_1.py     # trust scoring (auto-detected criteria)
-├── engine_2.py     # fact validator (IP, URL, credibility consistency)
-├── pipeline.py     # orchestrator — Engine 1 → Engine 2 → reports
-├── reporter.py     # generates 3 HTML reports + history
-├── dashboard.py    # web dashboard
-└── mcp_client.py   # MongoDB MCP client
+├── engine_2.py     # fact validator (IP, URL, CVE, consistency)
+├── pipeline.py     # standalone queue processor (Engine 1 → Engine 2 → reports)
+├── reporter.py     # generates the 3 HTML reports + history
+├── dashboard.py    # HTTP server, SSE stream, all endpoints
+├── mcp_client.py   # MongoDB MCP client (find/insert/delete/upsert)
+└── config_store.py # MongoDB-backed config (prompt, queries, recency)
 
-queries.txt         # search queries (one per line)
-prompt.txt          # Gemini credibility assessment prompt
-run.py              # single entry point
+agent_builder/
+└── agent.py        # Google ADK agent — run_research is the headline tool
 
-reports/            # generated at runtime
-├── report_raw.html
-├── report_verified.html
-├── report_eliminated.html
-└── history/        # auto-archived on every run
+templates/
+└── dashboard.html  # dashboard UI (extracted from Python)
+
+prompt.txt          # default Gemini credibility prompt (overridable in UI)
+queries.txt         # default search queries (overridable in UI)
+run.py              # entry point — starts the dashboard
+Dockerfile          # Cloud Run image (Python + Node + MCP server)
 ```
 
 ---
@@ -151,9 +194,12 @@ reports/            # generated at runtime
 
 | Collection | Contents |
 |---|---|
-| `raw_queue` | Raw agent findings pending pipeline |
+| `raw_queue` | Raw agent findings pending the pipeline |
 | `safe_traffic` | Verified entries that passed both engines |
-| `active_threats` | Eliminated entries with reason |
+| `active_threats` | Eliminated entries with the reason why |
+| `research_sessions` | Every research run: goal, queries, brief, sources, stats |
+| `domain_reputation` | Per-domain credibility accumulated across all sessions |
+| `config` | Editable prompt, queries, and recency filter |
 
 ---
 

@@ -67,15 +67,26 @@ def _extract_signals(text: str) -> dict:
     }
 
 
+_TIMELIMIT_LABELS = {"d": "past 24h", "w": "past week", "m": "past month", "y": "past year", "": "all time"}
+
+
+def _load_timelimit() -> str | None:
+    val = config_store.get("timelimit", "w")
+    return val if val in ("d", "w", "m", "y") else None
+
+
 async def _run(max_results_per_query=_max_results):
     queries = _load_queries()
+    timelimit = _load_timelimit()
+    label = _TIMELIMIT_LABELS.get(timelimit or "", "all time")
+    print(f"[AGENT] Time filter: {label}")
     total = 0
     async with MCPClient() as mcp:
         with DDGS() as ddgs:
             for query in queries:
                 print(f"[AGENT] Searching: {query}")
                 try:
-                    results = list(ddgs.text(query, max_results=max_results_per_query))
+                    results = list(ddgs.text(query, max_results=max_results_per_query, timelimit=timelimit))
                 except Exception as e:
                     print(f"[AGENT] Search failed for '{query}': {e}")
                     continue

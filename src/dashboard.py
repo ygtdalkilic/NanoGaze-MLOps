@@ -12,8 +12,10 @@ import agent
 import pipeline
 import reporter
 import config_store
+import research
 
 REPORTS_DIR = Path(os.getenv("REPORTS_DIR", "reports"))
+TEMPLATE = Path(__file__).parent.parent / "templates" / "dashboard.html"
 
 
 def load_reports():
@@ -35,384 +37,7 @@ def extract_subtitle(html: str) -> str:
     return match.group(1) if match else ""
 
 
-DASHBOARD_HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>NanoGaze MLOps Dashboard</title>
-<style>
-  :root {{
-    --black: #0a0a0a;
-    --dark: #111111;
-    --card: #1a1a1a;
-    --border: #2a2a2a;
-    --yellow: #f5c518;
-    --yellow-dim: #c9a614;
-    --yellow-glow: rgba(245, 197, 24, 0.15);
-    --text: #e8e8e8;
-    --muted: #888;
-  }}
 
-  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-
-  body {{
-    background: var(--black);
-    color: var(--text);
-    font-family: 'Segoe UI', Arial, sans-serif;
-    min-height: 100vh;
-  }}
-
-  header {{
-    background: var(--dark);
-    border-bottom: 2px solid var(--yellow);
-    padding: 24px 40px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }}
-
-  header h1 {{
-    font-size: 24px;
-    color: var(--yellow);
-    letter-spacing: 2px;
-    text-transform: uppercase;
-  }}
-
-  header span {{
-    color: var(--muted);
-    font-size: 13px;
-  }}
-
-  .stats {{
-    display: flex;
-    gap: 16px;
-    padding: 24px 40px;
-    background: var(--dark);
-    border-bottom: 1px solid var(--border);
-  }}
-
-  .stat-card {{
-    flex: 1;
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 16px 20px;
-    text-align: center;
-    transition: border-color 0.2s;
-  }}
-
-  .stat-card:hover {{ border-color: var(--yellow); }}
-
-  .stat-card .number {{
-    font-size: 32px;
-    font-weight: bold;
-    color: var(--yellow);
-  }}
-
-  .stat-card .label {{
-    font-size: 12px;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    margin-top: 4px;
-  }}
-
-  .tabs {{
-    display: flex;
-    gap: 0;
-    padding: 24px 40px 0;
-    border-bottom: 2px solid var(--border);
-  }}
-
-  .tab {{
-    padding: 12px 28px;
-    cursor: pointer;
-    font-size: 14px;
-    font-weight: 600;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    color: var(--muted);
-    border-bottom: 2px solid transparent;
-    margin-bottom: -2px;
-    transition: all 0.2s;
-    background: none;
-    border-top: none;
-    border-left: none;
-    border-right: none;
-  }}
-
-  .tab:hover {{ color: var(--yellow); }}
-  .tab.active {{ color: var(--yellow); border-bottom: 2px solid var(--yellow); }}
-
-  .content {{
-    padding: 32px 40px;
-  }}
-
-  .panel {{ display: none; }}
-  .panel.active {{ display: block; }}
-
-  .panel-header {{
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 20px;
-  }}
-
-  .panel-header h2 {{
-    font-size: 18px;
-    color: var(--yellow);
-  }}
-
-  .panel-header p {{
-    color: var(--muted);
-    font-size: 13px;
-  }}
-
-  .run-btn {{
-    background: var(--yellow);
-    color: var(--black);
-    border: none;
-    padding: 10px 24px;
-    font-weight: bold;
-    font-size: 13px;
-    border-radius: 6px;
-    cursor: pointer;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    transition: background 0.2s;
-  }}
-
-  .run-btn:hover {{ background: var(--yellow-dim); }}
-  .run-btn:disabled {{ background: #444; color: #888; cursor: not-allowed; }}
-
-  .table-wrap {{
-    overflow-x: auto;
-    border-radius: 8px;
-    border: 1px solid var(--border);
-  }}
-
-  table {{
-    border-collapse: collapse;
-    width: 100%;
-    background: var(--card);
-  }}
-
-  th {{
-    background: #1e1e1e;
-    color: var(--yellow);
-    padding: 12px 16px;
-    text-align: left;
-    font-size: 12px;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    border-bottom: 2px solid var(--yellow);
-  }}
-
-  td {{
-    padding: 10px 16px;
-    border-bottom: 1px solid var(--border);
-    font-size: 13px;
-    color: var(--text);
-    vertical-align: top;
-  }}
-
-  tr:hover td {{ background: var(--yellow-glow); }}
-
-  a {{ color: var(--yellow); text-decoration: none; }}
-  a:hover {{ text-decoration: underline; }}
-
-  .toast {{
-    position: fixed;
-    bottom: 32px;
-    right: 32px;
-    background: var(--yellow);
-    color: var(--black);
-    padding: 12px 24px;
-    border-radius: 6px;
-    font-weight: bold;
-    font-size: 13px;
-    display: none;
-    z-index: 999;
-  }}
-</style>
-</head>
-<body>
-
-<header>
-  <h1>&#9650; NanoGaze MLOps</h1>
-  <span>MLOps Hallucination Filter Pipeline</span>
-</header>
-
-<div class="stats">
-  <div class="stat-card">
-    <div class="number" id="stat-raw">{stat_raw}</div>
-    <div class="label">Total Entries</div>
-  </div>
-  <div class="stat-card">
-    <div class="number" id="stat-verified" style="color:#2ecc71">{stat_verified}</div>
-    <div class="label">Verified</div>
-  </div>
-  <div class="stat-card">
-    <div class="number" id="stat-eliminated" style="color:#e74c3c">{stat_eliminated}</div>
-    <div class="label">Eliminated</div>
-  </div>
-  <div class="stat-card">
-    <div class="number" id="stat-rate">{stat_rate}%</div>
-    <div class="label">Pass Rate</div>
-  </div>
-</div>
-
-<div class="tabs">
-  <button class="tab active" onclick="showTab('raw', this)">Raw Data</button>
-  <button class="tab" onclick="showTab('verified', this)">Verified</button>
-  <button class="tab" onclick="showTab('eliminated', this)">Eliminated</button>
-  <button class="tab" onclick="showTab('settings', this); loadSettings()">Settings</button>
-</div>
-
-<div class="content">
-  <div class="panel active" id="panel-raw">
-    <div class="panel-header">
-      <div>
-        <h2>Raw Dump</h2>
-        <p>{sub_raw}</p>
-      </div>
-      <div style="display:flex;gap:10px;">
-        <button class="run-btn" style="background:var(--card);color:var(--yellow);border:1px solid var(--yellow);" onclick="runAgent(this)">Run Agent</button>
-        <button class="run-btn" onclick="runPipeline(this)">Run Pipeline</button>
-        <button class="run-btn" style="background:var(--card);color:var(--yellow);border:1px solid var(--yellow);" onclick="saveHistory(this)">Save to History</button>
-      </div>
-    </div>
-    <div class="table-wrap">{table_raw}</div>
-  </div>
-
-  <div class="panel" id="panel-verified">
-    <div class="panel-header">
-      <div>
-        <h2>Verified Entries</h2>
-        <p>{sub_verified}</p>
-      </div>
-    </div>
-    <div class="table-wrap">{table_verified}</div>
-  </div>
-
-  <div class="panel" id="panel-eliminated">
-    <div class="panel-header">
-      <div>
-        <h2>Eliminated Entries</h2>
-        <p>{sub_eliminated}</p>
-      </div>
-    </div>
-    <div class="table-wrap">{table_eliminated}</div>
-  </div>
-
-  <div class="panel" id="panel-settings">
-    <div class="panel-header">
-      <div><h2>Settings</h2><p>Edit prompt and search queries stored in MongoDB</p></div>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
-      <div>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-          <span style="color:var(--yellow);font-size:14px;font-weight:600;letter-spacing:1px;text-transform:uppercase;">LLM Prompt</span>
-          <button class="run-btn" onclick="savePrompt(this)">Save Prompt</button>
-        </div>
-        <textarea id="prompt-editor" spellcheck="false" style="width:100%;height:320px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:14px;font-family:monospace;font-size:13px;resize:vertical;outline:none;line-height:1.6;"></textarea>
-      </div>
-      <div>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-          <span style="color:var(--yellow);font-size:14px;font-weight:600;letter-spacing:1px;text-transform:uppercase;">Search Queries</span>
-          <button class="run-btn" onclick="saveQueries(this)">Save Queries</button>
-        </div>
-        <textarea id="queries-editor" spellcheck="false" style="width:100%;height:320px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:14px;font-family:monospace;font-size:13px;resize:vertical;outline:none;line-height:1.6;" placeholder="One query per line"></textarea>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div class="toast" id="toast"></div>
-
-<script>
-  function showTab(name, el) {{
-    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.getElementById('panel-' + name).classList.add('active');
-    el.classList.add('active');
-  }}
-
-  function runAgent(btn) {{
-    btn.disabled = true;
-    btn.textContent = 'Running...';
-    fetch('/agent').then(r => r.json()).then(data => {{
-      showToast(data.message);
-      btn.disabled = false;
-      btn.textContent = 'Run Agent';
-    }}).catch(() => {{
-      showToast('Error running agent');
-      btn.disabled = false;
-      btn.textContent = 'Run Agent';
-    }});
-  }}
-
-  function runPipeline(btn) {{
-    btn.disabled = true;
-    btn.textContent = 'Running...';
-    fetch('/run').then(r => r.json()).then(data => {{
-      showToast(data.message + ' — reloading...');
-      setTimeout(() => location.reload(), 2000);
-    }}).catch(() => {{
-      showToast('Error running pipeline');
-      btn.disabled = false;
-      btn.textContent = 'Run Pipeline';
-    }});
-  }}
-
-  function saveHistory(btn) {{
-    btn.disabled = true;
-    btn.textContent = 'Saving...';
-    fetch('/save').then(r => r.json()).then(data => {{
-      showToast(data.message);
-      btn.disabled = false;
-      btn.textContent = 'Save to History';
-    }}).catch(() => {{
-      showToast('Error saving');
-      btn.disabled = false;
-      btn.textContent = 'Save to History';
-    }});
-  }}
-
-  function loadSettings() {{
-    fetch('/prompt').then(r => r.json()).then(d => {{
-      document.getElementById('prompt-editor').value = d.value;
-    }});
-    fetch('/queries').then(r => r.json()).then(d => {{
-      document.getElementById('queries-editor').value = d.value;
-    }});
-  }}
-
-  function savePrompt(btn) {{
-    btn.disabled = true;
-    btn.textContent = 'Saving...';
-    fetch('/prompt', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body: JSON.stringify({{value: document.getElementById('prompt-editor').value}})}})
-      .then(r => r.json()).then(d => {{ showToast(d.message); btn.disabled = false; btn.textContent = 'Save Prompt'; }})
-      .catch(() => {{ showToast('Error saving prompt'); btn.disabled = false; btn.textContent = 'Save Prompt'; }});
-  }}
-
-  function saveQueries(btn) {{
-    btn.disabled = true;
-    btn.textContent = 'Saving...';
-    fetch('/queries', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body: JSON.stringify({{value: document.getElementById('queries-editor').value}})}})
-      .then(r => r.json()).then(d => {{ showToast(d.message); btn.disabled = false; btn.textContent = 'Save Queries'; }})
-      .catch(() => {{ showToast('Error saving queries'); btn.disabled = false; btn.textContent = 'Save Queries'; }});
-  }}
-
-  function showToast(msg) {{
-    const t = document.getElementById('toast');
-    t.textContent = msg;
-    t.style.display = 'block';
-    setTimeout(() => t.style.display = 'none', 4000);
-  }}
-</script>
-</body>
-</html>"""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -430,6 +55,15 @@ class Handler(BaseHTTPRequestHandler):
             self._get_config("prompt", agent._load_prompt())
         elif self.path == "/queries":
             self._get_config("queries", agent._queries_file.read_text() if agent._queries_file.exists() else "")
+        elif self.path == "/timelimit":
+            self._get_config("timelimit", "w")
+        elif self.path == "/history":
+            self._get_history()
+        elif self.path == "/reputation":
+            self._json({"domains": research.get_reputation()})
+        elif self.path.startswith("/research/stream"):
+            sid = self.path.split("id=")[-1] if "id=" in self.path else ""
+            self._stream_research(sid)
         else:
             self._serve_dashboard()
 
@@ -442,6 +76,24 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/queries":
             config_store.save("queries", body.get("value", ""))
             msg = "Queries saved to MongoDB"
+        elif self.path == "/timelimit":
+            config_store.save("timelimit", body.get("value", "w"))
+            msg = "Time filter saved"
+        elif self.path == "/research":
+            goal = body.get("goal", "").strip()
+            if not goal:
+                self._json({"message": "No goal provided"})
+                return
+            sid = research.start(goal)
+            self._json({"session_id": sid})
+            return
+        elif self.path == "/research/sync":
+            goal = body.get("goal", "").strip()
+            if not goal:
+                self._json({"error": "No goal provided"})
+                return
+            self._json(research.run_sync(goal))
+            return
         else:
             msg = "Unknown endpoint"
         self.send_response(200)
@@ -456,18 +108,21 @@ class Handler(BaseHTTPRequestHandler):
         eliminated_count = eliminated_html.count("<tr>") - 1
         rate = round((verified_count / raw_count) * 100) if raw_count > 0 else 0
 
-        page = DASHBOARD_HTML.format(
-            stat_raw=max(raw_count, 0),
-            stat_verified=max(verified_count, 0),
-            stat_eliminated=max(eliminated_count, 0),
-            stat_rate=rate,
-            sub_raw=extract_subtitle(raw_html),
-            sub_verified=extract_subtitle(verified_html),
-            sub_eliminated=extract_subtitle(eliminated_html),
-            table_raw=extract_table(raw_html),
-            table_verified=extract_table(verified_html),
-            table_eliminated=extract_table(eliminated_html),
-        )
+        values = {
+            "{stat_raw}": str(max(raw_count, 0)),
+            "{stat_verified}": str(max(verified_count, 0)),
+            "{stat_eliminated}": str(max(eliminated_count, 0)),
+            "{stat_rate}": str(rate),
+            "{sub_raw}": extract_subtitle(raw_html),
+            "{sub_verified}": extract_subtitle(verified_html),
+            "{sub_eliminated}": extract_subtitle(eliminated_html),
+            "{table_raw}": extract_table(raw_html),
+            "{table_verified}": extract_table(verified_html),
+            "{table_eliminated}": extract_table(eliminated_html),
+        }
+        page = TEMPLATE.read_text(encoding="utf-8")
+        for k, v in values.items():
+            page = page.replace(k, v)
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -484,10 +139,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             msg = f"Error: {e}"
 
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps({"message": msg}).encode())
+        self._json({"message": msg})
 
     def _run_agent(self):
         try:
@@ -495,25 +147,44 @@ class Handler(BaseHTTPRequestHandler):
             msg = "Agent done — queue populated. Click Run Pipeline to process."
         except Exception as e:
             msg = f"Error: {e}"
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps({"message": msg}).encode())
+        self._json({"message": msg})
 
     def _get_config(self, key: str, default: str):
-        value = config_store.get(key, default)
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps({"value": value}).encode())
+        self._json({"value": config_store.get(key, default)})
 
     def _save_history(self):
         dest = reporter.save_to_history()
         msg = f"Saved to history/{dest.name}" if dest else "No reports to save"
+        self._json({"message": msg})
+
+    def _json(self, data: dict):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(json.dumps({"message": msg}).encode())
+        self.wfile.write(json.dumps(data).encode())
+
+    def _get_history(self):
+        sessions = research.get_history()
+        clean = []
+        for s in sessions:
+            s.pop("_id", None)
+            clean.append(s)
+        clean.sort(key=lambda s: s.get("ts", ""), reverse=True)
+        self._json({"sessions": clean[:50]})
+
+    def _stream_research(self, sid: str):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        def send(event):
+            try:
+                self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
+                self.wfile.flush()
+            except Exception:
+                pass
+        research.stream(sid, send)
 
 
 def run(port=int(os.getenv("DASHBOARD_PORT", "8080"))):

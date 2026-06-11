@@ -166,3 +166,4 @@ docker-compose.override.yml
 ios/Pods/
 android/.gradle/
 android/local.properties
+.gstack/

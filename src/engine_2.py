@@ -1,10 +1,15 @@
+import os
 import re
 import time
 import requests
 
-CVE_API = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+CVE_API = os.getenv("NVD_CVE_API", "https://services.nvd.nist.gov/rest/json/cves/2.0")
 CVE_PATTERN = re.compile(r'CVE-\d{4}-\d+', re.IGNORECASE)
 IP_PATTERN = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
+
+CVE_TIMEOUT = int(os.getenv("ENGINE2_CVE_TIMEOUT", "8"))
+CVE_RATE_DELAY = float(os.getenv("ENGINE2_CVE_DELAY", "0.7"))
+URL_TIMEOUT = int(os.getenv("ENGINE2_URL_TIMEOUT", "5"))
 
 _cve_cache: dict[str, bool] = {}
 
@@ -33,18 +38,18 @@ def _check_cve(cve_id: str) -> bool:
     if cve_id in _cve_cache:
         return _cve_cache[cve_id]
     try:
-        resp = requests.get(CVE_API, params={"cveId": cve_id}, timeout=8)
+        resp = requests.get(CVE_API, params={"cveId": cve_id}, timeout=CVE_TIMEOUT)
         exists = resp.json().get("totalResults", 0) > 0
     except Exception:
         exists = True  # inconclusive — don't penalize
     _cve_cache[cve_id] = exists
-    time.sleep(0.7)  # NVD: 5 req/30s without API key
+    time.sleep(CVE_RATE_DELAY)  # NVD: 5 req/30s without API key
     return exists
 
 
 def _check_url(url: str) -> bool:
     try:
-        resp = requests.head(url, timeout=6, allow_redirects=True,
+        resp = requests.head(url, timeout=URL_TIMEOUT, allow_redirects=True,
                              headers={"User-Agent": "Mozilla/5.0"})
         return resp.status_code < 400
     except Exception:
