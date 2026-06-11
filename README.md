@@ -1,6 +1,6 @@
 # NanoGaze MLOps
 
-A goal-driven research agent that returns **verified, hallucination-free** answers. You give it a research goal; it plans the searches, runs every source through a dual-engine hallucination filter, and synthesizes a cited brief from only what survives.
+A goal-driven research agent that returns **verified, corroborated** answers. You give it a research goal; it plans the searches, runs every source through a dual-engine hallucination filter, cross-checks each finding across independent sources, and returns a confidence-rated brief from only what survives.
 
 Powered by **Gemini 2.5 Flash**, backed by **MongoDB Atlas via MCP**, built for the [Google Cloud Rapid Agent Hackathon](https://googlecloudrapidagenthackathon.devpost.com/) — **MongoDB track**.
 
@@ -17,26 +17,28 @@ AI agents that search the web and report findings can't be trusted blindly. Raw 
 You type a research goal. The agent then:
 
 ```
-1. PLAN      Gemini turns your goal into targeted search queries
-2. SEARCH    DuckDuckGo fetches sources (recency filter configurable)
-3. SCORE     Each source gets a Gemini credibility read
-4. ENGINE 1  Trust scoring — 4 auto-detected metrics, drops low-trust sources
-5. ENGINE 2  Fact validation — IPs, URL reachability, CVEs, consistency
-6. SYNTHESIZE  Gemini writes a brief from ONLY the verified survivors
-7. REMEMBER  Per-domain reputation accumulates in MongoDB across sessions
+1. PLAN       Gemini turns your goal into tightly-scoped search queries
+2. SEARCH     DuckDuckGo fetches sources (recency filter configurable)
+3. RELEVANCE  Gemini drops off-topic results before they're scored
+4. CREDIBILITY  Each on-topic source gets a Gemini credibility read
+5. ENGINE 1   Trust scoring — 4 metrics + learned reputation, drops low-trust sources
+6. ENGINE 2   Fact validation — IPs, URL reachability, CVEs, consistency
+7. CORROBORATE  Findings cross-checked across independent sources; contradictions flagged
+8. REMEMBER   Per-domain reputation accumulates in MongoDB (only on save)
 ```
 
-Everything streams live to the dashboard, and every artifact — raw sources, verified, eliminated, the brief, domain reputation — is stored in MongoDB Atlas through the MCP server.
+Everything streams live to the dashboard. Each research run is ephemeral — it shows only that run's data — and is persisted to History + reputation memory only when you click **Save to History**. Every artifact is stored in MongoDB Atlas through the MCP server.
 
 ---
 
 ## Why this is an agent, not a chatbot
 
 - **It plans** — query generation is goal-dependent and non-deterministic, not a fixed list
-- **It uses tools** — web search, a dual-engine filter, and MongoDB through MCP
+- **It uses tools** — web search, a dual-engine filter, corroboration, and MongoDB through MCP
 - **It acts** — writes verified/eliminated sets to MongoDB, generates reports, exports briefs
-- **It remembers** — domain reputation is long-term memory that improves trust judgments over time
-- **You stay in control** — editable prompt, queries, recency filter, and a live view of every step
+- **It remembers** — domain reputation is long-term memory that feeds back into trust scoring
+- **It verifies** — claims are confirmed across independent sources, not taken from one source's word
+- **You stay in control** — editable prompt, queries, recency filter, explicit save, and a live view of every step
 
 ---
 
@@ -46,20 +48,17 @@ Everything streams live to the dashboard, and every artifact — raw sources, ve
                        Research Goal
                             │
                             ▼
-              Gemini — generates search queries
+              Gemini — generates scoped search queries
                             │
                             ▼
                   DuckDuckGo web search
                             │
                             ▼
-            Gemini — per-source credibility read
-                            │
-                            ▼
-   MongoDB Atlas (via MCP): raw_queue ── reports/report_raw.html
+        Gemini — relevance + credibility read (off-topic dropped)
                             │
                             ▼
               Engine 1 — Trust Scoring (0–100%)
-                 completeness · validity · reputation · richness
+                 completeness · validity · learned reputation · richness
                             │
                             ▼
               Engine 2 — Fact Validation
@@ -68,12 +67,18 @@ Everything streams live to the dashboard, and every artifact — raw sources, ve
                    ┌────────┴────────┐
                    ▼                 ▼
               safe_traffic      active_threats        ← MongoDB via MCP
-                   │                 │
-                   ▼                 ▼
-              Gemini — synthesizes verified brief
+                   │
+                   ▼
+   Gemini — cross-source corroboration (count independent domains
+            per claim, flag single-source, detect contradictions)
                             │
                             ▼
+                   Confidence-rated brief
+                            │
+                            ▼   (only on Save to History)
          research_sessions + domain_reputation        ← MongoDB via MCP
+                                    │
+                                    └──── feeds back into Engine 1 reputation
 ```
 
 ---
@@ -88,14 +93,14 @@ Everything streams live to the dashboard, and every artifact — raw sources, ve
 
 ## Engine 1 — Trust Scoring
 
-| Metric | What it measures |
-|---|---|
-| Completeness | How many expected fields have data |
-| Validity | URL well-formed, title/body substantive |
-| Reputation | Source domain reliability |
-| Richness | Title and body length/depth |
+| Metric | Weight | What it measures |
+|---|---|---|
+| Completeness | 35% | How many expected fields have data |
+| Validity | 30% | URL well-formed, title/body substantive |
+| Reputation | 20% | Source domain reliability |
+| Richness | 15% | Title and body length/depth |
 
-Weighted into a 0–100% trust score; below `ENGINE1_THRESHOLD` (default 50) is eliminated. Criteria are auto-detected — domain-agnostic.
+Weighted into a 0–100% trust score; below `ENGINE1_THRESHOLD` (default 50) is eliminated. **Reputation is learned** — once a domain has been seen `REPUTATION_MIN_SAMPLES` times, its score blends the static allowlist with its actual track record from `domain_reputation`, so the system sharpens its judgments the more it's used.
 
 ## Engine 2 — Fact Validation
 
@@ -105,6 +110,17 @@ Weighted into a 0–100% trust score; below `ENGINE1_THRESHOLD` (default 50) is 
 | URL reachability | Confirms the source URL returns a valid response |
 | CVE lookup | Verifies any CVE mentioned exists in the NVD database |
 | Credibility consistency | Flags low-credibility entries with zero supporting signals |
+
+## Corroboration — the truth layer
+
+Engines 1 and 2 confirm a source is *well-formed and not obviously fabricated* — they don't prove its claims are *true*. Corroboration closes that gap: Gemini extracts the key findings from the surviving sources and, for each, counts how many **independent domains** support it.
+
+- A claim backed by ≥ `CORROBORATION_MIN_DOMAINS` (default 2) independent domains is marked **corroborated**
+- Single-source claims are explicitly **flagged**, not hidden
+- Direct disagreements between sources are surfaced as **contradictions**
+- Overall **confidence** (high/medium/low) is derived from the share of corroborated findings
+
+This is what separates "this source looks credible" from "this claim is independently confirmed."
 
 ---
 
@@ -167,7 +183,7 @@ adk web .
 ```
 src/
 ├── agent.py        # Gemini search + per-source credibility analysis
-├── research.py     # goal → queries → search → dual-engine → brief (live streamed)
+├── research.py     # goal → queries → relevance → dual-engine → corroboration → brief (live streamed)
 ├── engine_1.py     # trust scoring (auto-detected criteria)
 ├── engine_2.py     # fact validator (IP, URL, CVE, consistency)
 ├── pipeline.py     # standalone queue processor (Engine 1 → Engine 2 → reports)
@@ -197,8 +213,8 @@ Dockerfile          # Cloud Run image (Python + Node + MCP server)
 | `raw_queue` | Raw agent findings pending the pipeline |
 | `safe_traffic` | Verified entries that passed both engines |
 | `active_threats` | Eliminated entries with the reason why |
-| `research_sessions` | Every research run: goal, queries, brief, sources, stats |
-| `domain_reputation` | Per-domain credibility accumulated across all sessions |
+| `research_sessions` | Saved research runs: goal, queries, brief, findings + corroboration, contradictions, confidence, sources, stats |
+| `domain_reputation` | Per-domain credibility accumulated across saved sessions; feeds back into Engine 1 |
 | `config` | Editable prompt, queries, and recency filter |
 
 ---
