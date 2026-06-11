@@ -149,8 +149,8 @@ async def _run(goal: str, emit) -> dict:
             "ts": datetime.now(timezone.utc).isoformat(),
         }
         await mcp.insert_many("research_sessions", [session])
+        emit({"type": "done", "msg": "Research complete", "session": session})
 
-    emit({"type": "done", "msg": "Research complete", "session": session})
     return session
 
 

@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from contextlib import AsyncExitStack
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -66,17 +67,18 @@ class MCPClient:
     """Async context manager — one MongoDB MCP session per run."""
 
     async def __aenter__(self):
-        self._stdio = stdio_client(_server_params)
-        read, write = await self._stdio.__aenter__()
-        self._session_cm = ClientSession(read, write)
-        self.session = await self._session_cm.__aenter__()
+        self._stack = AsyncExitStack()
+        read, write = await self._stack.enter_async_context(stdio_client(_server_params))
+        self.session = await self._stack.enter_async_context(ClientSession(read, write))
         await self.session.initialize()
         print("[MCP] MongoDB MCP session connected")
         return self
 
     async def __aexit__(self, *args):
-        await self._session_cm.__aexit__(*args)
-        await self._stdio.__aexit__(*args)
+        try:
+            await self._stack.aclose()
+        except (RuntimeError, BaseExceptionGroup):
+            pass  # anyio task-scope cleanup noise on loop teardown — work is already done
         print("[MCP] MongoDB MCP session closed")
 
     async def _call(self, tool: str, args: dict):
