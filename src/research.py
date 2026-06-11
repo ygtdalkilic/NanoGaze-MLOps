@@ -12,6 +12,7 @@ import reporter
 from mcp_client import MCPClient
 
 _sessions: dict[str, qmod.Queue] = {}
+_current: dict = {}
 
 
 def _generate_queries(goal: str) -> list[str]:
@@ -45,7 +46,7 @@ def _domain(url: str) -> str:
     return urlparse(url).netloc.lower().replace("www.", "")
 
 
-async def _update_reputation(mcp, scored_docs: list) -> None:
+def _aggregate_reputation(scored_docs: list) -> dict:
     agg: dict[str, dict] = {}
     for d in scored_docs:
         domain = _domain(d.get("url", ""))
@@ -57,12 +58,7 @@ async def _update_reputation(mcp, scored_docs: list) -> None:
         if cred in ("high", "medium", "low"):
             a[cred] += 1
         a["trust_sum"] += d.get("trust_score", 0)
-
-    for domain, a in agg.items():
-        await mcp.upsert("domain_reputation", {"domain": domain}, {
-            "$inc": {"seen": a["seen"], "high": a["high"], "medium": a["medium"], "low": a["low"], "trust_sum": a["trust_sum"]},
-            "$set": {"last_seen": datetime.now(timezone.utc).isoformat()},
-        })
+    return agg
 
 
 async def _run(goal: str, emit) -> dict:
@@ -102,7 +98,11 @@ async def _run(goal: str, emit) -> dict:
                     emit({"type": "result", "msg": f"{r.get('title', '')[:60]} → {llm['credibility']}", "credibility": llm["credibility"]})
 
         if not docs:
-            emit({"type": "done", "msg": "No results found", "session": {"goal": goal, "queries": queries, "brief": "No search results were found. Try broadening your goal or changing the time filter.", "sources": [], "stats": {"total": 0, "verified": 0, "eliminated": 0}, "ts": datetime.now(timezone.utc).isoformat()}})
+            empty = {"goal": goal, "queries": queries, "brief": "No search results were found. Try broadening your goal or changing the time filter.", "sources": [], "stats": {"total": 0, "verified": 0, "eliminated": 0}, "ts": datetime.now(timezone.utc).isoformat()}
+            _current["session"] = empty
+            _current["reputation"] = {}
+            _current["saved"] = False
+            emit({"type": "done", "msg": "No results found", "session": empty})
             return {}
 
         emit({"type": "engine", "msg": f"Engine 1 — trust scoring {len(docs)} sources..."})
@@ -119,14 +119,13 @@ async def _run(goal: str, emit) -> dict:
             e["eliminated_by"] = "engine_2"
         all_eliminated = e1_eliminated + e2_eliminated
 
-        emit({"type": "progress", "msg": "Writing results to MongoDB (safe_traffic / active_threats)..."})
+        emit({"type": "progress", "msg": "Writing this run's results to MongoDB (replacing previous)..."})
+        await mcp.delete_all("safe_traffic")
+        await mcp.delete_all("active_threats")
         if e2_verified:
             await mcp.insert_many("safe_traffic", e2_verified)
         if all_eliminated:
             await mcp.insert_many("active_threats", all_eliminated)
-
-        emit({"type": "progress", "msg": "Updating domain reputation memory..."})
-        await _update_reputation(mcp, e1_verified + e1_eliminated)
 
         reporter.generate(docs, e2_verified, all_eliminated)
 
@@ -136,7 +135,6 @@ async def _run(goal: str, emit) -> dict:
         else:
             brief = "No sources survived the dual-engine filter. Every result was flagged as low-trust or failed fact validation. Try broadening your goal or changing the time filter."
 
-        emit({"type": "progress", "msg": "Saving session to MongoDB..."})
         session = {
             "goal": goal,
             "queries": queries,
@@ -148,8 +146,10 @@ async def _run(goal: str, emit) -> dict:
             "stats": {"total": len(docs), "verified": len(e2_verified), "eliminated": len(all_eliminated)},
             "ts": datetime.now(timezone.utc).isoformat(),
         }
-        await mcp.insert_many("research_sessions", [session])
-        emit({"type": "done", "msg": "Research complete", "session": session})
+        _current["session"] = session
+        _current["reputation"] = _aggregate_reputation(e1_verified + e1_eliminated)
+        _current["saved"] = False
+        emit({"type": "done", "msg": "Research complete — click Save to History to keep it", "session": session})
 
     return session
 
@@ -199,6 +199,31 @@ def run_sync(goal: str) -> dict:
 
     _drive(goal, capture)
     return result.get("session") or {"error": result.get("error", "Research failed")}
+
+
+async def _save(session: dict, reputation: dict) -> None:
+    async with MCPClient() as mcp:
+        await mcp.insert_many("research_sessions", [session])
+        for domain, a in reputation.items():
+            await mcp.upsert("domain_reputation", {"domain": domain}, {
+                "$inc": {"seen": a["seen"], "high": a["high"], "medium": a["medium"], "low": a["low"], "trust_sum": a["trust_sum"]},
+                "$set": {"last_seen": datetime.now(timezone.utc).isoformat()},
+            })
+
+
+def save_current() -> dict:
+    if not _current.get("session"):
+        return {"message": "No research to save — run one first"}
+    if _current.get("saved"):
+        return {"message": "Already saved to history"}
+    try:
+        asyncio.run(_save(_current["session"], _current.get("reputation", {})))
+    except BaseExceptionGroup as eg:
+        real = [e for e in eg.exceptions if not isinstance(e, (GeneratorExit, RuntimeError))]
+        if real:
+            return {"message": f"Error saving: {real[0]}"}
+    _current["saved"] = True
+    return {"message": "Saved to history"}
 
 
 async def _get_collection(name: str) -> list:

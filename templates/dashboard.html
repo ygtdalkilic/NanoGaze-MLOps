@@ -532,7 +532,10 @@
         <div class="settings-card">
           <div class="settings-card-head">
             <span class="settings-label">Research Brief</span>
-            <button class="run-btn outline" onclick="exportBrief()">Export .md</button>
+            <div style="display:flex;gap:8px;">
+              <button class="run-btn" id="save-history-btn" onclick="saveToHistory(this)">Save to History</button>
+              <button class="run-btn outline" onclick="exportBrief()">Export .md</button>
+            </div>
           </div>
           <div id="brief-text" style="font-size:13px;line-height:1.9;color:var(--text);white-space:pre-wrap;padding:4px 0;"></div>
         </div>
@@ -888,6 +891,14 @@
       `<span style="color:#4caf50;">Verified</span><br>${st.verified || 0}<br><br>` +
       `<span style="color:#e05555;">Eliminated</span><br>${st.eliminated || 0}`;
     document.getElementById('research-progress').style.display = 'none';
+  }
+
+  function saveToHistory(btn) {
+    if (!_lastSession) { showToast('Run a research first'); return; }
+    setBtn(btn, true, 'Save to History');
+    fetch('/research/save', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})
+      .then(r => r.json()).then(d => { showToast(d.message); setBtn(btn, false, 'Save to History'); })
+      .catch(() => { showToast('Error saving'); setBtn(btn, false, 'Save to History'); });
   }
 
   function exportBrief() {

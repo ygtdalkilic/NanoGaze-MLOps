@@ -94,6 +94,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._json(research.run_sync(goal))
             return
+        elif self.path == "/research/save":
+            self._json(research.save_current())
+            return
         else:
             msg = "Unknown endpoint"
         self.send_response(200)
