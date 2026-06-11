@@ -17,11 +17,41 @@ _current: dict = {}
 
 def _generate_queries(goal: str) -> list[str]:
     prompt = (
-        f"Generate 4 specific DuckDuckGo search queries to research this goal:\n{goal}\n\n"
-        "Return only the queries, one per line, no numbering, no bullets."
+        f'The user\'s research goal is:\n"{goal}"\n\n'
+        "Generate exactly 4 focused web search queries that find information DIRECTLY answering this goal. "
+        "Rules:\n"
+        "- Stay tightly on-topic. Do not broaden to related-but-different subjects or tangents.\n"
+        "- Reuse the key nouns and specific terminology from the goal in every query.\n"
+        "- Make each query distinct (different angle of the same goal), not a reworded duplicate.\n"
+        "Return only the 4 queries, one per line, no numbering, no bullets."
     )
     response = agent._client.models.generate_content(model=agent._model, contents=prompt)
     return [l.strip() for l in response.text.splitlines() if l.strip()][:5]
+
+
+def _analyze(goal: str, text: str) -> dict:
+    prompt = (
+        f'Research goal: "{goal}"\n\n'
+        f"Content to evaluate:\n{text[:1500]}\n\n"
+        "First decide if this content is genuinely RELEVANT to the research goal (on-topic and useful for answering it). "
+        "Then assess its CREDIBILITY.\n"
+        "Respond with exactly these three lines and nothing else:\n"
+        "relevant: yes | no\n"
+        "credibility: high | medium | low\n"
+        "reason: <one short sentence>"
+    )
+    response = agent._client.models.generate_content(model=agent._model, contents=prompt)
+    raw = response.text
+    relevant, credibility, reason = True, "unknown", raw
+    for line in raw.splitlines():
+        low = line.lower().strip()
+        if low.startswith("relevant:"):
+            relevant = "yes" in low.split(":", 1)[1]
+        elif low.startswith("credibility:"):
+            credibility = line.split(":", 1)[1].strip()
+        elif low.startswith("reason:"):
+            reason = line.split(":", 1)[1].strip()
+    return {"relevant": relevant, "credibility": credibility, "reason": reason}
 
 
 def _synthesize(goal: str, docs: list) -> str:
@@ -83,7 +113,10 @@ async def _run(goal: str, emit) -> dict:
 
                 for r in results:
                     body = f"{r.get('title', '')} {r.get('body', '')}"
-                    llm = agent.analyze_with_llm(body)
+                    a = _analyze(goal, body)
+                    if not a["relevant"]:
+                        emit({"type": "result", "msg": f"{r.get('title', '')[:55]} → off-topic, skipped", "credibility": "low"})
+                        continue
                     docs.append({
                         "source": "duckduckgo",
                         "query": query,
@@ -91,11 +124,11 @@ async def _run(goal: str, emit) -> dict:
                         "title": r.get("title", ""),
                         "body": r.get("body", ""),
                         "signals": agent._extract_signals(body),
-                        "llm_analysis": llm,
+                        "llm_analysis": {"credibility": a["credibility"], "reason": a["reason"]},
                         "ts": datetime.now(timezone.utc).isoformat(),
                         "processed": True,
                     })
-                    emit({"type": "result", "msg": f"{r.get('title', '')[:60]} → {llm['credibility']}", "credibility": llm["credibility"]})
+                    emit({"type": "result", "msg": f"{r.get('title', '')[:60]} → {a['credibility']}", "credibility": a["credibility"]})
 
         if not docs:
             empty = {"goal": goal, "queries": queries, "brief": "No search results were found. Try broadening your goal or changing the time filter.", "sources": [], "stats": {"total": 0, "verified": 0, "eliminated": 0}, "ts": datetime.now(timezone.utc).isoformat()}

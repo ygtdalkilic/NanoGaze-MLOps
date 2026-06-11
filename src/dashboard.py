@@ -7,7 +7,7 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import agent
 import pipeline
 import reporter
@@ -193,7 +193,7 @@ class Handler(BaseHTTPRequestHandler):
 def run(port=int(os.getenv("DASHBOARD_PORT", "8080"))):
     os.chdir(Path(__file__).parent.parent)
     print(f"[DASHBOARD] Running at http://localhost:{port}")
-    HTTPServer(("", port), Handler).serve_forever()
+    ThreadingHTTPServer(("", port), Handler).serve_forever()
 
 
 if __name__ == "__main__":

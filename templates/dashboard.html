@@ -545,6 +545,29 @@
           <div id="brief-stats" style="margin-top:16px;background:#0d0d0d;border:1px solid var(--border);border-radius:8px;padding:14px;font-size:12px;color:var(--muted);line-height:2;"></div>
         </div>
       </div>
+
+      <div style="background:#0d0d0d;border:1px solid var(--border);border-radius:8px;padding:18px 22px;margin-top:20px;font-size:12px;color:var(--muted);line-height:1.8;">
+        <div style="color:var(--yellow);font-weight:600;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:12px;">How sources are judged &mdash; correctness rubric</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+          <div>
+            <div style="color:var(--text);font-weight:600;margin-bottom:6px;">Stage 1 &middot; Relevance (Gemini)</div>
+            Each result is checked against your goal. Off-topic sources are dropped before scoring.<br><br>
+            <div style="color:var(--text);font-weight:600;margin-bottom:6px;">Stage 2 &middot; Credibility (Gemini)</div>
+            <span style="color:#4caf50;">high</span> = verifiable, fact-based &nbsp;
+            <span style="color:#ff9800;">medium</span> = partly unverified &nbsp;
+            <span style="color:#e05555;">low</span> = likely fabricated
+          </div>
+          <div>
+            <div style="color:var(--text);font-weight:600;margin-bottom:6px;">Stage 3 &middot; Engine 1 — Trust Score (0&ndash;100%)</div>
+            completeness 35% &middot; validity 30% &middot; reputation 20% &middot; richness 15%. Below 50% is eliminated.<br><br>
+            <div style="color:var(--text);font-weight:600;margin-bottom:6px;">Stage 4 &middot; Engine 2 — Fact Validation</div>
+            IP sanity &middot; URL reachability &middot; CVE existence &middot; credibility consistency. Any failure eliminates the source.
+          </div>
+        </div>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+          Only sources that pass <strong style="color:var(--text)">all four stages</strong> appear in the brief. Each source above shows its credibility label and Engine 1 trust score.
+        </div>
+      </div>
     </div>
   </div>
 
@@ -743,6 +766,14 @@
     })(start);
   }
 
+  function updateStats(stats) {
+    const total = stats.total || 0, verified = stats.verified || 0, eliminated = stats.eliminated || 0;
+    const rate = total > 0 ? Math.round(verified / total * 100) : 0;
+    const set = (id, v) => { const el = document.getElementById(id); el.dataset.target = v; animCount(el); };
+    set('stat-raw', total); set('stat-verified', verified); set('stat-eliminated', eliminated); set('stat-rate', rate);
+    document.getElementById('rate-fill').style.width = rate + '%';
+  }
+
   window.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.stat-num[data-target]').forEach(animCount);
     const rate = parseInt(document.getElementById('stat-rate').dataset.target) || 0;
@@ -878,19 +909,22 @@
     document.getElementById('research-brief').style.display = 'block';
     document.getElementById('brief-text').textContent = session.brief;
     const srcEl = document.getElementById('brief-sources');
-    srcEl.innerHTML = (session.sources || []).map(s =>
-      `<a href="${s.url}" target="_blank" style="display:block;background:#0d0d0d;border:1px solid var(--border);border-radius:6px;padding:10px 12px;color:var(--text);text-decoration:none;font-size:11px;line-height:1.5;transition:border-color 0.2s;"
+    srcEl.innerHTML = (session.sources || []).map(s => {
+      const tc = (s.trust_score||0) >= 75 ? '#4caf50' : (s.trust_score||0) >= 50 ? '#ff9800' : '#e05555';
+      return `<a href="${s.url}" target="_blank" style="display:block;background:#0d0d0d;border:1px solid var(--border);border-radius:6px;padding:10px 12px;color:var(--text);text-decoration:none;font-size:11px;line-height:1.5;transition:border-color 0.2s;"
          onmouseover="this.style.borderColor='var(--yellow)'" onmouseout="this.style.borderColor='var(--border)'">
-         <span style="color:${s.credibility==='high'?'#4caf50':s.credibility==='medium'?'#ff9800':'#e05555'};font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">${s.credibility}</span><br>
+         <span style="color:${s.credibility==='high'?'#4caf50':s.credibility==='medium'?'#ff9800':'#e05555'};font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">${s.credibility}</span>
+         <span style="color:${tc};font-size:9px;font-weight:700;float:right;">TRUST ${s.trust_score||0}%</span><br>
          ${s.title||s.url}
-       </a>`
-    ).join('');
+       </a>`;
+    }).join('');
     const st = session.stats || {};
     document.getElementById('brief-stats').innerHTML =
       `<span style="color:var(--text);">Total found</span><br>${st.total || 0}<br><br>` +
       `<span style="color:#4caf50;">Verified</span><br>${st.verified || 0}<br><br>` +
       `<span style="color:#e05555;">Eliminated</span><br>${st.eliminated || 0}`;
     document.getElementById('research-progress').style.display = 'none';
+    updateStats(st);
   }
 
   function saveToHistory(btn) {
